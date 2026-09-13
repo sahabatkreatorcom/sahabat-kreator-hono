@@ -88,7 +88,7 @@ Generate nilai yang wajib acak:
 openssl rand -base64 32   # BETTER_AUTH_SECRET
 openssl rand -base64 32   # CRON_SECRET
 openssl rand -base64 32   # ENCRYPTION_KEY
-openssl rand -base64 24   # POSTGRES_PASSWORD
+openssl rand -hex 24      # POSTGRES_PASSWORD (hex, URL-safe — jangan base64!)
 ```
 
 Yang **wajib** dicek sebelum lanjut:
