@@ -1,5 +1,6 @@
 // Halaman Buat Organisasi — wizard untuk user tanpa org
 import { Loader2, Plus } from "lucide-react";
+import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { useNavigate } from "react-router";
 import { toast } from "sonner";
@@ -14,6 +15,7 @@ export function CreateOrgPage() {
   useSeo({ title: "Buat Organisasi", path: "/create-organization", noIndex: true });
 
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const [name, setName] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -36,6 +38,10 @@ export function CreateOrgPage() {
     }
 
     await authClient.organization.setActive({ organizationId: data.id });
+    // Invalidate cache sesi/daftar org — tanpa ini dashboard masih memakai
+    // data ["me"] lama (staleTime 60s) sehingga org baru tidak terlihat
+    // sampai manual refresh.
+    queryClient.invalidateQueries();
     toast.success(`Organisasi "${name}" berhasil dibuat!`);
     navigate("/dashboard", { replace: true });
   }
