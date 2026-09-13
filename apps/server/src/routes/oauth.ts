@@ -20,6 +20,9 @@ import {
   fetchPlatformProfile,
   isOAuthPlatformSupported,
   type OAuthPlatform,
+  replizAuthorizeUrl,
+  replizExchangeCode,
+  replizGetFacebookPages,
 } from "@sahabatkreator/publishing";
 import { and, eq, lt } from "drizzle-orm";
 import { Hono } from "hono";
@@ -27,6 +30,7 @@ import { z } from "zod";
 import { fireActivity } from "../lib/activity-log";
 import { errorResponse, requireOrg } from "../lib/auth-guard";
 import { checkFeatureGate } from "../lib/billing";
+import { getReplizCredentials, isReplizRouted, toReplizPlatformKey } from "../lib/bridge";
 import { encrypt } from "../lib/crypto";
 import { generateId } from "../lib/id";
 import {
@@ -106,6 +110,32 @@ oauthRoute.get("/:platform/start", async (c) => {
       return c.json({ message: `OAuth platform ${platform} tidak didukung.` }, 400);
     }
     await checkFeatureGate(ctx.organization.id, "social_accounts");
+
+    // Bridge Repliz: connect-flow baru diarahkan ke OAuth app Repliz (bukan app native)
+    if (await isReplizRouted(platform)) {
+      const cred = await getReplizCredentials();
+      const platformKey = toReplizPlatformKey(platform);
+      if (!cred || !platformKey) {
+        return c.json(
+          { message: "Bridge Repliz aktif tapi kredensial belum dikonfigurasi admin." },
+          400,
+        );
+      }
+      const state = generateId("oauthstate") + generateId("nonce");
+      await db.insert(oauthState).values({
+        id: generateId("ost"),
+        state,
+        platform,
+        organizationId: ctx.organization.id,
+        userId: ctx.user.id,
+        expiresAt: new Date(Date.now() + 10 * 60 * 1000),
+      });
+      await db.delete(oauthState).where(lt(oauthState.expiresAt, new Date()));
+      const serverUrl = env.SERVER_URL || "http://localhost:3000";
+      const redirect = `${serverUrl}/api/oauth/${platform}/repliz-callback`;
+      const authorizeUrl = await replizAuthorizeUrl(cred, platformKey, redirect);
+      return c.json({ authorizeUrl });
+    }
 
     const cred = await getAppCredential(platform);
 
@@ -302,6 +332,157 @@ oauthRoute.get("/:platform/callback", async (c) => {
   } catch (error) {
     console.error(`[oauth] callback ${platform} gagal:`, error);
     const msg = error instanceof Error ? error.message : "Gagal menghubungkan akun";
+    return failRedirect(msg.slice(0, 300));
+  }
+});
+
+/**
+ * GET /oauth/:platform/repliz-callback — callback dari halaman Repliz setelah user approve
+ * OAuth di platform (via app milik Repliz). Terbukti via spike: browser diarahkan ke
+ * URL redirect kita dengan ?code=<repliz exchange code> (query param, bukan fragment).
+ * Flow: exchange code → token Repliz → (FB: get-page → picker) → connect → accountId.
+ */
+oauthRoute.get("/:platform/repliz-callback", async (c) => {
+  const platform = c.req.param("platform") as OAuthPlatform;
+  const failRedirect = (msg: string) =>
+    c.redirect(`${env.WEB_URL}/dashboard/accounts?connect_error=${encodeURIComponent(msg)}`);
+
+  try {
+    if (!isOAuthPlatformSupported(platform)) {
+      return failRedirect("Platform tidak didukung");
+    }
+
+    const code = c.req.query("code");
+    const state = c.req.query("state");
+    const errorParam = c.req.query("error_description") ?? c.req.query("error");
+    if (errorParam) return failRedirect(errorParam);
+    if (!code || !state) return failRedirect("Kode otorisasi tidak lengkap");
+
+    const [stateRow] = await db
+      .delete(oauthState)
+      .where(and(eq(oauthState.state, state), eq(oauthState.platform, platform)))
+      .returning();
+    if (!stateRow)
+      return failRedirect("State OAuth tidak valid atau kedaluwarsa. Coba hubungkan ulang.");
+    if (stateRow.expiresAt < new Date()) {
+      return failRedirect("State OAuth kedaluwarsa. Coba hubungkan ulang.");
+    }
+
+    const cred = await getReplizCredentials();
+    const platformKey = toReplizPlatformKey(platform);
+    if (!cred || !platformKey) {
+      return failRedirect("Bridge Repliz tidak aktif — hubungi admin");
+    }
+
+    // 1. Exchange code → token Repliz (token user-level platform, short-lived)
+    const token = await replizExchangeCode(cred, platformKey, code);
+
+    // 2. Facebook: token user-level tidak cukup untuk connect — perlu page token.
+    //    Ambil daftar Page, simpan pending selection (page token terenkripsi), user pilih.
+    if (platform === "facebook") {
+      const pages = await replizGetFacebookPages(cred, token);
+      if (pages.length === 0) {
+        return failRedirect("Tidak ada Facebook Page yang bisa diakses akun ini");
+      }
+      const pendingId = generateId("oauthpend");
+      const pagesData = pages.map((p) => ({
+        pageId: p.id,
+        pageName: p.name,
+        pageAccessTokenEnc: encrypt(p.token), // page token Repliz (terenkripsi at-rest)
+        igUserId: null,
+        igUsername: p.username ?? null,
+        // Marker flow Repliz — picker select mendeteksi ini untuk connect via bridge
+        replizBridge: true,
+      }));
+      await db.insert(oauthPendingSelection).values({
+        id: pendingId,
+        userId: stateRow.userId,
+        organizationId: stateRow.organizationId,
+        platform,
+        pagesData: JSON.stringify(pagesData),
+        expiresAt: new Date(Date.now() + 10 * 60 * 1000),
+      });
+      return c.redirect(
+        `${env.WEB_URL}/dashboard/accounts?pending=${encodeURIComponent(pendingId)}`,
+      );
+    }
+
+    // 3. Platform single-entity (IG standalone, Threads, TikTok, YouTube, LinkedIn):
+    //    langsung connect dengan token → accountId
+    const { replizConnectAccount } = await import("@sahabatkreator/publishing");
+    const accountId = await replizConnectAccount(cred, platformKey, { token });
+    const { replizGetAccount } = await import("@sahabatkreator/publishing");
+    const info = await replizGetAccount(cred, accountId);
+
+    // Upsert social account — replizAccountId di metadata (routing publish per-account)
+    const [existing] = await db
+      .select({ id: socialAccount.id, organizationId: socialAccount.organizationId })
+      .from(socialAccount)
+      .where(
+        and(
+          eq(socialAccount.platform, platform),
+          eq(socialAccount.platformAccountId, info.generatedId),
+        ),
+      )
+      .limit(1);
+
+    if (existing && existing.organizationId !== stateRow.organizationId) {
+      return failRedirect("Akun ini sudah terhubung di organisasi lain.");
+    }
+
+    const values = {
+      username: info.username ?? info.name,
+      displayName: info.name,
+      avatarUrl: info.picture ?? null,
+      // Tidak ada platform token di sisi kita — Repliz yang menyimpannya.
+      accessTokenEnc: null,
+      refreshTokenEnc: null,
+      tokenExpiresAt: null,
+      isConnected: true,
+      needsReconnect: false,
+      lastError: null,
+      metadata: {
+        replizAccountId: accountId,
+        replizGeneratedId: info.generatedId,
+      },
+      lastSyncedAt: new Date(),
+    };
+
+    if (existing) {
+      await db.update(socialAccount).set(values).where(eq(socialAccount.id, existing.id));
+      fireActivity({
+        orgId: stateRow.organizationId,
+        userId: stateRow.userId,
+        action: "account.reconnected",
+        targetType: "social_account",
+        targetId: existing.id,
+        metadata: { platform, username: info.username, via: "repliz" },
+      });
+    } else {
+      const id = generateId("socacc");
+      await db
+        .insert(socialAccount)
+        .values({
+          id,
+          organizationId: stateRow.organizationId,
+          platform,
+          platformAccountId: info.generatedId,
+          ...values,
+        });
+      fireActivity({
+        orgId: stateRow.organizationId,
+        userId: stateRow.userId,
+        action: "account.connected",
+        targetType: "social_account",
+        targetId: id,
+        metadata: { platform, username: info.username, via: "repliz" },
+      });
+    }
+
+    return c.redirect(`${env.WEB_URL}/dashboard/accounts?connect_success=${platform}`);
+  } catch (error) {
+    console.error(`[oauth] repliz-callback ${platform} gagal:`, error);
+    const msg = error instanceof Error ? error.message : "Gagal menghubungkan akun via Repliz";
     return failRedirect(msg.slice(0, 300));
   }
 });

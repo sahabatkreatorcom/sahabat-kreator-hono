@@ -180,6 +180,76 @@ accountsRoute.post("/pending/:id/select", async (c) => {
       );
     }
 
+    // Flow bridge Repliz: page token di pending adalah token user-level Repliz.
+    // Connect Page terpilih ke workspace Repliz → simpan replizAccountId di metadata.
+    if (row.platform === "facebook" && row.pagesData.includes("replizBridge")) {
+      const { getReplizCredentials } = await import("../lib/bridge");
+      const cred = await getReplizCredentials();
+      if (!cred) return c.json({ message: "Bridge Repliz tidak aktif" }, 400);
+
+      const { replizConnectAccount, replizGetAccount } = await import("@sahabatkreator/publishing");
+      const pageToken = decrypt(page.pageAccessTokenEnc);
+      const accountId = await replizConnectAccount(cred, "facebook", {
+        pageId: page.pageId,
+        token: pageToken,
+      });
+      const info = await replizGetAccount(cred, accountId);
+
+      const [existingRepliz] = await db
+        .select({ id: socialAccount.id, organizationId: socialAccount.organizationId })
+        .from(socialAccount)
+        .where(
+          and(
+            eq(socialAccount.platform, "facebook"),
+            eq(socialAccount.platformAccountId, info.generatedId),
+          ),
+        )
+        .limit(1);
+      if (existingRepliz && existingRepliz.organizationId !== ctx.organization.id) {
+        return c.json({ message: "Akun ini sudah terhubung di organisasi lain." }, 409);
+      }
+
+      const values = {
+        username: info.username ?? info.name,
+        displayName: info.name,
+        avatarUrl: info.picture ?? null,
+        accessTokenEnc: null,
+        refreshTokenEnc: null,
+        tokenExpiresAt: null,
+        isConnected: true,
+        needsReconnect: false,
+        lastError: null,
+        metadata: {
+          replizAccountId: accountId,
+          replizGeneratedId: info.generatedId,
+          pageId: page.pageId,
+        },
+        lastSyncedAt: new Date(),
+      };
+      if (existingRepliz) {
+        await db.update(socialAccount).set(values).where(eq(socialAccount.id, existingRepliz.id));
+      } else {
+        await db.insert(socialAccount).values({
+          id: generateId("socacc"),
+          organizationId: ctx.organization.id,
+          platform: "facebook",
+          platformAccountId: info.generatedId,
+          ...values,
+        });
+      }
+
+      await db.delete(oauthPendingSelection).where(eq(oauthPendingSelection.id, row.id));
+      fireActivity({
+        orgId: ctx.organization.id,
+        userId: ctx.user.id,
+        action: existingRepliz ? "account.reconnected" : "account.connected",
+        targetType: "social_account",
+        targetId: existingRepliz?.id ?? info.generatedId,
+        metadata: { platform: "facebook", username: info.username, via: "repliz" },
+      });
+      return c.json({ ok: true, username: info.username ?? info.name });
+    }
+
     const result = await upsertSocialAccount({
       organizationId: ctx.organization.id,
       userId: ctx.user.id,

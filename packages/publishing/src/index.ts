@@ -76,5 +76,28 @@ export {
   recordQuotaSnapshot,
 } from "./quota";
 export * from "./reply";
+export {
+  type ReplizAccount,
+  type ReplizCredentials,
+  REPLIZ_PLATFORMS,
+  type ReplizPlatformKey,
+  type ReplizPage,
+  type ReplizSchedule,
+  type ReplizScheduleInput,
+  type ReplizScheduleStatus,
+  REPLIZ_SUPPORTED,
+  replizConnectAccount,
+  replizCreateSchedule,
+  replizExchangeCode,
+  replizGetAccount,
+  replizGetFacebookPages,
+  replizGetSchedule,
+  replizListAccounts,
+  replizRemoveAccount,
+  replizRemoveSchedule,
+  replizReconnectAccount,
+  replizAuthorizeUrl,
+  type ReplizMedia,
+} from "./repliz";
 export { countNeedsReconnect, refreshDueTokens, type TokenRefreshResult } from "./token-refresh";
 export * from "./types";

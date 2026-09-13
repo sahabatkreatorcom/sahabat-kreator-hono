@@ -148,6 +148,10 @@ export type SyncResult = { platform: string; newItems: number; error?: string };
  */
 export async function syncAccountEngagement(ctx: SyncContext): Promise<SyncResult> {
   try {
+    // Akun bridge Repliz: komentar via Comment API Repliz + health check isConnected
+    if (ctx.account.metadata?.replizAccountId) {
+      return syncRepliz(ctx);
+    }
     switch (ctx.account.platform) {
       case "instagram":
         return syncInstagram(ctx, GRAPH_FB);
@@ -548,6 +552,104 @@ async function syncGoogleBusiness(ctx: SyncContext): Promise<SyncResult> {
 }
 
 // ---------------------------------------------------------------------------
+// Repliz bridge — komentar via Comment API + health check isConnected
+// ---------------------------------------------------------------------------
+
+/** Kredensial bridge aktif (null bila bridge dimatikan admin) */
+async function replizCred(): Promise<{ accessKey: string; secretKey: string } | null> {
+  const { bridgeConfig } = await import("@sahabatkreator/db/schema");
+  const [row] = await db
+    .select()
+    .from(bridgeConfig)
+    .where(and(eq(bridgeConfig.provider, "repliz"), eq(bridgeConfig.isActive, true)))
+    .limit(1);
+  if (!row) return null;
+  try {
+    return { accessKey: row.accessKey, secretKey: decrypt(row.secretEnc) };
+  } catch {
+    return null;
+  }
+}
+
+/** Comment Repliz (GET /public/comment) — bentuk menyesuaikan dokumen paginated docs */
+type ReplizComment = {
+  _id: string;
+  message?: string;
+  text?: string;
+  username?: string;
+  user?: { name?: string; username?: string; picture?: string };
+  createdAt?: string;
+  accountId?: string;
+  status?: string;
+};
+
+/**
+ * Sync akun bridge: health check (isConnected → needsReconnect) + komentar pending.
+ * Komentar balasan/lanjutan (resolved/ignored) tidak diambil — inbox fokus item baru.
+ */
+async function syncRepliz(ctx: SyncContext): Promise<SyncResult> {
+  const cred = await replizCred();
+  if (!cred) return { platform: ctx.account.platform, newItems: 0, error: "bridge_off" };
+
+  const { replizGetAccount } = await import("./repliz");
+  const accountId = ctx.account.metadata!.replizAccountId as string;
+
+  // Health: token platform expired di sisi Repliz → tandai butuh hubungkan ulang
+  try {
+    const info = await replizGetAccount(cred, accountId);
+    if (!info.isConnected) {
+      await db
+        .update(socialAccount)
+        .set({
+          needsReconnect: true,
+          lastError: "Token kedaluwarsa di bridge — hubungkan ulang.",
+        })
+        .where(eq(socialAccount.id, ctx.account.id));
+      return { platform: ctx.account.platform, newItems: 0, error: "needs_reconnect" };
+    }
+    // Sehat kembali (reconnect sukses di Repliz) → reset flag
+    await db
+      .update(socialAccount)
+      .set({ needsReconnect: false, lastError: null })
+      .where(eq(socialAccount.id, ctx.account.id));
+  } catch {
+    // GET account gagal (network/429) → jangan blokir sync komentar
+  }
+
+  // Komentar pending di workspace Repliz → inbox kita
+  const { httpRequest: http } = await import("./http");
+  const res = await http<{ docs?: ReplizComment[] }>(
+    `https://api.repliz.com/public/comment?page=1&limit=20&status=pending&accountIds=${encodeURIComponent(accountId)}`,
+    {
+      headers: {
+        Authorization: `Basic ${Buffer.from(`${cred.accessKey}:${cred.secretKey}`).toString("base64")}`,
+      },
+    },
+  );
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    return {
+      platform: ctx.account.platform,
+      newItems: 0,
+      error: `Repliz comment: ${text.slice(0, 150)}`,
+    };
+  }
+  const comments = (await res.json()).docs ?? [];
+  const items: EngagementUpsert[] = comments.map((c) => ({
+    socialAccountId: ctx.account.id,
+    organizationId: ctx.account.organizationId,
+    type: "comment" as const,
+    platformItemId: c._id,
+    authorName: c.user?.name ?? null,
+    authorUsername: c.username ?? (c.user?.username ? `@${c.user.username}` : null),
+    content: c.message ?? c.text ?? null,
+    occurredAt: c.createdAt ? new Date(c.createdAt) : null,
+  }));
+  const newItems = await upsertEngagementItems(items);
+  return { platform: ctx.account.platform, newItems };
+}
+
+// ---------------------------------------------------------------------------
 // Sinkronisasi massal — dipakai worker (polling fallback webhook)
 // ---------------------------------------------------------------------------
 
@@ -592,8 +694,9 @@ export async function syncDueAccounts(
     const batch = due.slice(i, i + BATCH_SIZE);
     const settled = await Promise.allSettled(
       batch.map(async (account) => {
-        if (!account.accessTokenEnc) return null;
-        const accessToken = decrypt(account.accessTokenEnc);
+        // Akun bridge: token tidak ada di sisi kita (Repliz menyimpannya) — langsung sync
+        const isBridge = Boolean(account.metadata?.replizAccountId);
+        const accessToken = isBridge ? "" : decrypt(account.accessTokenEnc!);
         const result = await syncAccountEngagement({
           account: {
             id: account.id,

@@ -1,9 +1,9 @@
-// Admin: Kredensial Platform — per-platform OAuth card grid
+// Admin: Kredensial Platform — per-platform OAuth card grid + bridge Repliz
 
 import { env } from "@sahabatkreator/env/web";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link2, Loader2, Save, ShieldCheck, Webhook } from "lucide-react";
-import { useMemo, useState } from "react";
+import { Link2, Loader2, Save, ShieldCheck, Waypoints, Webhook } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -93,6 +93,182 @@ function buildSubtitle(platform: Platform, hasCredential: boolean) {
   const withWebhook = ["instagram", "instagram_standalone", "facebook", "threads", "tiktok"];
   if (withWebhook.includes(platform)) return `OAuth connect + webhook · ${status}`;
   return `OAuth connect · ${status}`;
+}
+
+type BridgeData = {
+  bridge: {
+    provider: string;
+    accessKey: string;
+    isActive: boolean;
+    routing: Record<string, "native" | "repliz">;
+    updatedAt: string;
+    secretConfigured: boolean;
+  } | null;
+  supportedPlatforms: string[];
+};
+
+/** Section bridge Repliz — kredensial global + routing OAuth per platform (native vs repliz) */
+function ReplizBridgeSection({ serverOrigin }: { serverOrigin: string }) {
+  const queryClient = useQueryClient();
+  const [accessKey, setAccessKey] = useState("");
+  const [secretKey, setSecretKey] = useState("");
+  const [routing, setRouting] = useState<Record<string, "native" | "repliz">>({});
+
+  const { data, isLoading } = useQuery({
+    queryKey: ["admin-bridge-config"],
+    queryFn: () => api.get<BridgeData>("/admin/bridge-config"),
+  });
+
+  // Prefill form saat data pertama kali dimuat
+  const loadedRef = useRef(false);
+  useEffect(() => {
+    if (data && !loadedRef.current) {
+      loadedRef.current = true;
+      setAccessKey(data.bridge?.accessKey ?? "");
+      setRouting(data.bridge?.routing ?? {});
+    }
+  }, [data]);
+
+  const save = useMutation({
+    mutationFn: () =>
+      api.post("/admin/bridge-config", {
+        accessKey,
+        ...(secretKey ? { secretKey } : {}), // kosong = pertahankan secret lama
+        isActive: true,
+        routing,
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["admin-bridge-config"] });
+      setSecretKey("");
+      toast.success("Bridge Repliz tersimpan (secret terenkripsi)");
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  if (isLoading) return <PageLoader />;
+
+  const supported = data?.supportedPlatforms ?? [];
+  const configured = Boolean(data?.bridge?.secretConfigured);
+
+  return (
+    <div className="card p-0">
+      {/* Header */}
+      <div className="flex items-center gap-3 border-[var(--border-light)] border-b p-4 pb-3">
+        <div className="flex h-9 w-9 items-center justify-center rounded-full bg-[var(--bg-tertiary)]">
+          <Waypoints className="h-4.5 w-4.5 text-[var(--accent-gold)]" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <p className="font-semibold text-sm">Repliz Bridge</p>
+            <Badge variant={configured ? "success" : "secondary"}>
+              {configured ? "Terkonfigurasi" : "Belum dikonfigurasi"}
+            </Badge>
+          </div>
+          <p className="mt-0.5 text-[var(--text-muted)] text-xs">
+            Bridge sementara — OAuth connect &amp; publish via API Repliz selama akses API native
+            belum disetujui platform
+          </p>
+        </div>
+      </div>
+
+      <div className="flex flex-col gap-3 p-4">
+        {/* Kredensial */}
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div className="space-y-1.5">
+            <Label htmlFor="repliz-access-key" className="text-xs">
+              Access Key
+            </Label>
+            <Input
+              id="repliz-access-key"
+              value={accessKey}
+              onChange={(e) => setAccessKey(e.target.value)}
+              placeholder="Access Key (repliz.com/user/setting/api)"
+              className="h-9 text-sm"
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="repliz-secret-key" className="text-xs">
+              Secret Key
+            </Label>
+            <Input
+              id="repliz-secret-key"
+              type="password"
+              value={secretKey}
+              onChange={(e) => setSecretKey(e.target.value)}
+              placeholder={configured ? "•••••••• (sudah tersimpan)" : "Secret Key"}
+              className="h-9 text-sm"
+            />
+          </div>
+        </div>
+
+        {/* Routing per platform */}
+        <div>
+          <p className="mb-2 font-medium text-[var(--text-secondary)] text-xs">
+            OAuth routing per platform — akun baru via Repliz atau aplikasi native
+          </p>
+          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+            {supported.map((platform) => {
+              const mode = routing[platform] === "repliz" ? "repliz" : "native";
+              const label = PLATFORMS[platform as Platform]?.label ?? platform;
+              return (
+                <div
+                  key={platform}
+                  className="flex items-center justify-between rounded-lg bg-[var(--bg-tertiary)] px-3 py-2"
+                >
+                  <span className="text-sm">{label}</span>
+                  <div className="flex rounded-md border border-[var(--border-light)]">
+                    {(["native", "repliz"] as const).map((m) => (
+                      <button
+                        key={m}
+                        type="button"
+                        onClick={() => setRouting((r) => ({ ...r, [platform]: m }))}
+                        className={`px-2.5 py-1 font-medium text-xs capitalize transition-colors ${
+                          mode === m
+                            ? m === "repliz"
+                              ? "bg-[var(--accent-gold)] text-white"
+                              : "bg-[var(--bg-quaternary)] text-[var(--text-primary)]"
+                            : "text-[var(--text-muted)] hover:text-[var(--text-secondary)]"
+                        }`}
+                      >
+                        {m === "repliz" ? "Repliz" : "Native"}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          <p className="mt-2 text-[11px] text-[var(--text-muted)]">
+            Routing hanya memengaruhi koneksi akun baru. Akun yang sudah terhubung tetap diarahkan
+            sesuai metode koneksi awalnya.
+          </p>
+        </div>
+      </div>
+
+      {/* Footer */}
+      <div className="flex items-center justify-between border-[var(--border-light)] border-t px-4 py-3">
+        <p className="text-[11px] text-[var(--text-muted)]">
+          Callback Repliz:{" "}
+          <span className="font-mono">
+            {serverOrigin}/api/oauth/{"{platform}"}/repliz-callback
+          </span>
+        </p>
+        <Button
+          size="sm"
+          disabled={save.isPending || !accessKey || (!secretKey && !configured)}
+          onClick={() => save.mutate()}
+          className="bg-[var(--accent-gold)] text-white hover:bg-[var(--accent-gold)]/90"
+        >
+          {save.isPending ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <Save className="h-3.5 w-3.5" />
+          )}
+          Simpan Bridge
+        </Button>
+      </div>
+    </div>
+  );
 }
 
 function PlatformCard({
@@ -299,6 +475,9 @@ export function AdminCredentialsPage() {
           Konfigurasi OAuth App ID, Secret, dan Webhook per platform sosial
         </p>
       </div>
+
+      {/* Bridge Repliz — di atas platform cards */}
+      <ReplizBridgeSection serverOrigin={serverOrigin} />
 
       {/* Platform cards grid */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">

@@ -5,6 +5,7 @@ import { db } from "@sahabatkreator/db";
 import {
   activityLog,
   auditLog,
+  bridgeConfig,
   member,
   organization,
   payment,
@@ -18,6 +19,7 @@ import {
   webhookLog,
 } from "@sahabatkreator/db/schema";
 import { env } from "@sahabatkreator/env/server";
+import { REPLIZ_PLATFORMS } from "@sahabatkreator/publishing";
 import { and, count, desc, eq, ilike, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";
@@ -587,6 +589,106 @@ adminRoute.delete("/platform-credentials/:platform", async (c) => {
     });
 
     return c.json({ ok: true });
+  } catch (error) {
+    return errorResponse(error);
+  }
+});
+
+// ---------- Bridge config (Repliz) — publish sementara via API pihak ketiga ----------
+
+/** GET /admin/bridge-config — status bridge + routing (secret tidak dikembalikan) */
+adminRoute.get("/bridge-config", async (c) => {
+  try {
+    await requirePlatformAdmin(c);
+    const [row] = await db
+      .select()
+      .from(bridgeConfig)
+      .where(eq(bridgeConfig.provider, "repliz"))
+      .limit(1);
+    return c.json({
+      bridge: row
+        ? {
+            provider: row.provider,
+            accessKey: row.accessKey,
+            isActive: row.isActive,
+            routing: row.routing ?? {},
+            updatedAt: row.updatedAt,
+            secretConfigured: true,
+          }
+        : null,
+      supportedPlatforms: Object.keys(REPLIZ_PLATFORMS),
+    });
+  } catch (error) {
+    return errorResponse(error);
+  }
+});
+
+const bridgeSchema = z.object({
+  accessKey: z.string().min(1),
+  secretKey: z.string().min(1).optional(), // kosong = pertahankan secret lama
+  isActive: z.boolean().default(true),
+  routing: z.record(z.string(), z.enum(["native", "repliz"])).default({}),
+});
+
+/** POST /admin/bridge-config — simpan kredensial + routing per platform */
+adminRoute.post("/bridge-config", async (c) => {
+  try {
+    const ctx = await requirePlatformAdmin(c);
+    const input = bridgeSchema.parse(await c.req.json());
+
+    // Validasi routing: hanya platform yang didukung Repliz
+    const supported = Object.keys(REPLIZ_PLATFORMS) as string[];
+    const invalid = Object.entries(input.routing).filter(
+      ([platform, mode]) => mode === "repliz" && !supported.includes(platform),
+    );
+    if (invalid.length > 0) {
+      return c.json(
+        { message: `Platform tidak didukung Repliz: ${invalid.map(([p]) => p).join(", ")}` },
+        400,
+      );
+    }
+
+    const [existing] = await db
+      .select({ secretEnc: bridgeConfig.secretEnc })
+      .from(bridgeConfig)
+      .where(eq(bridgeConfig.provider, "repliz"))
+      .limit(1);
+
+    const secretEnc = input.secretKey ? encrypt(input.secretKey) : existing?.secretEnc;
+    if (!secretEnc) {
+      return c.json({ message: "Secret key wajib diisi saat pertama kali setup" }, 400);
+    }
+
+    await db
+      .insert(bridgeConfig)
+      .values({
+        id: generateId("bridge"),
+        provider: "repliz",
+        accessKey: input.accessKey,
+        secretEnc,
+        isActive: input.isActive,
+        routing: input.routing,
+      })
+      .onConflictDoUpdate({
+        target: bridgeConfig.provider,
+        set: {
+          accessKey: input.accessKey,
+          secretEnc,
+          isActive: input.isActive,
+          routing: input.routing,
+          updatedAt: new Date(),
+        },
+      });
+
+    // Audit: accessKey saja — secret tidak masuk log
+    logAdminAction(c, ctx.user.id, {
+      action: "bridge_config.update",
+      entityType: "bridge_config",
+      entityId: "repliz",
+      metadata: { accessKey: input.accessKey, isActive: input.isActive, routing: input.routing },
+    });
+
+    return c.json({ ok: true }, 201);
   } catch (error) {
     return errorResponse(error);
   }

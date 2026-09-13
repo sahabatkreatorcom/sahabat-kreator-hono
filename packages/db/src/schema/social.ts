@@ -26,6 +26,8 @@ export type PendingPageData = {
   tokenExpiresAt?: string | null;
   /** LinkedIn saja: scope yang di-grant */
   scopes?: string[] | null;
+  /** Flow bridge Repliz: page token = token Repliz, select → connect via bridge (bukan simpan token) */
+  replizBridge?: boolean;
 };
 
 // Akun social media milik organization (hasil OAuth connect)
@@ -154,6 +156,33 @@ export const platformHealth = pgTable(
     uniqueIndex("platform_health_platform_uidx").on(table.platform),
     index("platform_health_checkedAt_idx").on(table.checkedAt),
   ],
+);
+
+// Konfigurasi bridge pihak ketiga (Repliz) — publish sementara via API mereka
+// selama akses API native platform belum disetujui. Satu row per provider.
+// routing: platform → "repliz" (connect baru via Repliz) — default native.
+// Akun yang sudah terhubung via bridge tetap bridge seumur hidup row-nya
+// (routing via socialAccount.metadata.replizAccountId), jadi switch admin
+// tidak memutus akun existing.
+export const bridgeConfig = pgTable(
+  "bridge_config",
+  {
+    id: text("id").primaryKey(),
+    // "repliz" (provider tunggu — kolom ini untuk ekspansi provider lain)
+    provider: text("provider").notNull(),
+    accessKey: text("access_key").notNull(),
+    // Secret terenkripsi AES-256-GCM (pola sama platformCredential.clientSecretEnc)
+    secretEnc: text("secret_enc").notNull(),
+    // Platform apa saja yang connect-flow baru-nya diarahkan ke bridge
+    routing: jsonb("routing").$type<Record<string, string>>().default({}).notNull(),
+    isActive: boolean("is_active").notNull().default(true),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at")
+      .defaultNow()
+      .$onUpdate(() => new Date())
+      .notNull(),
+  },
+  (table) => [uniqueIndex("bridge_config_provider_uidx").on(table.provider)],
 );
 
 export const socialAccountRelations = relations(socialAccount, ({ one }) => ({

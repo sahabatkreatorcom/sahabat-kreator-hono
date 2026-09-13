@@ -8,6 +8,7 @@ import { instagramAdapter } from "./instagram";
 import { instagramStandaloneAdapter } from "./instagram-standalone";
 import { linkedinAdapter } from "./linkedin";
 import { pinterestAdapter } from "./pinterest";
+import { replizAdapter } from "./repliz";
 import { threadsAdapter } from "./threads";
 import { tiktokAdapter } from "./tiktok";
 import { youtubeAdapter } from "./youtube";
@@ -23,6 +24,7 @@ const ADAPTERS: Record<string, PlatformAdapter> = {
   linkedin: linkedinAdapter,
   pinterest: pinterestAdapter,
   google_business: googleBusinessAdapter,
+  repliz: replizAdapter,
 };
 
 export function getAdapter(platform: string): PlatformAdapter | undefined {

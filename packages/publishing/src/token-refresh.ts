@@ -91,6 +91,7 @@ export async function refreshDueTokens(limit = 20): Promise<TokenRefreshResult> 
       platform: socialAccount.platform,
       refreshTokenEnc: socialAccount.refreshTokenEnc,
       tokenExpiresAt: socialAccount.tokenExpiresAt,
+      metadata: socialAccount.metadata,
     })
     .from(socialAccount)
     .where(
@@ -107,6 +108,9 @@ export async function refreshDueTokens(limit = 20): Promise<TokenRefreshResult> 
 
   for (const account of due) {
     try {
+      // Akun bridge Repliz: token platform disimpan Repliz, bukan kita — tidak ada yang di-refresh.
+      // Health dicek via GET /public/account/{id} (isConnected), dilakukan engagement-sync.
+      if (account.metadata?.replizAccountId) continue;
       // Sudah expired dan tidak ada refresh token → tandai perlu hubungkan ulang
       if (!account.refreshTokenEnc) {
         if (account.tokenExpiresAt && account.tokenExpiresAt < now) {

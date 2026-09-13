@@ -48,6 +48,7 @@ async function loadPostForPublish(postId: string) {
         accessTokenEnc: socialAccount.accessTokenEnc,
         refreshTokenEnc: socialAccount.refreshTokenEnc,
         username: socialAccount.username,
+        metadata: socialAccount.metadata,
       },
     })
     .from(post)
@@ -101,14 +102,68 @@ async function enforceDailyLimit(socialAccountId: string, platform: string): Pro
   }
 }
 
+/** Baca kredensial bridge Repliz aktif (null bila tidak dikonfigurasi) */
+async function loadBridgeCredentials(): Promise<{ accessKey: string; secretKey: string } | null> {
+  const { bridgeConfig } = await import("@sahabatkreator/db/schema");
+  const [row] = await db
+    .select()
+    .from(bridgeConfig)
+    .where(and(eq(bridgeConfig.provider, "repliz"), eq(bridgeConfig.isActive, true)))
+    .limit(1);
+  if (!row) return null;
+  const { decrypt } = await import("./crypto");
+  try {
+    return { accessKey: row.accessKey, secretKey: decrypt(row.secretEnc) };
+  } catch {
+    return null;
+  }
+}
+
 /** Bangun PublishInput dari row DB */
 async function buildPublishInput(postId: string): Promise<{
   input: PublishInput;
   platform: string;
   scheduledAt: Date | null;
+  /** "repliz" bila akun ini publish via bridge */
+  adapterPlatform: string;
 } | null> {
   const row = await loadPostForPublish(postId);
   if (!row) return null;
+
+  const media = await loadPostMedia(postId);
+  const content = row.post.content ?? row.groupContent;
+
+  // Akun bridge Repliz: publish via Schedule API (routing per-account, metadata.replizAccountId)
+  const replizAccountId = row.account.metadata?.replizAccountId as string | undefined;
+  if (replizAccountId) {
+    const cred = await loadBridgeCredentials();
+    if (!cred) {
+      throw new PublishError(
+        "bridge_not_configured",
+        `Akun @${row.account.username} terhubung via bridge, tapi bridge belum dikonfigurasi admin.`,
+        false,
+      );
+    }
+    return {
+      platform: row.post.platform,
+      scheduledAt: row.scheduledAt,
+      adapterPlatform: "repliz",
+      input: {
+        // Kredensial Repliz diangkut via accessToken (format basic:<base64>) — lihat adapter repliz
+        accessToken: `basic:${Buffer.from(`${cred.accessKey}:${cred.secretKey}`).toString("base64")}`,
+        refreshToken: null,
+        platformAccountId: replizAccountId,
+        content,
+        hashtags: row.post.hashtags ?? [],
+        media,
+        platformSettings: {
+          ...(row.post.platformSettings ?? {}),
+          scheduledAt: row.scheduledAt?.toISOString(),
+          replizTargetPlatform: row.post.platform, // adapter tahu platform asli
+        },
+      },
+    };
+  }
 
   const accessToken = decryptToken(row.account.accessTokenEnc);
   if (!accessToken) {
@@ -120,12 +175,10 @@ async function buildPublishInput(postId: string): Promise<{
   }
   const refreshToken = decryptToken(row.account.refreshTokenEnc);
 
-  const media = await loadPostMedia(postId);
-  const content = row.post.content ?? row.groupContent;
-
   return {
     platform: row.post.platform,
     scheduledAt: row.scheduledAt,
+    adapterPlatform: row.post.platform,
     input: {
       accessToken,
       refreshToken,
@@ -285,9 +338,13 @@ export async function executePublish(
       (await loadPostForPublish(postId))!.post.socialAccountId,
       built.platform,
     );
-    const adapter = getAdapter(built.platform);
+    const adapter = getAdapter(built.adapterPlatform);
     if (!adapter) {
-      await markFailed(postId, "no_adapter", `Adapter platform ${built.platform} belum tersedia.`);
+      await markFailed(
+        postId,
+        "no_adapter",
+        `Adapter platform ${built.adapterPlatform} belum tersedia.`,
+      );
       return "failed";
     }
 
@@ -403,17 +460,26 @@ export async function pollPost(postId: string): Promise<"published" | "failed" |
     .limit(1);
   if (!row?.handle) return "processing";
 
-  const adapter = getAdapter(row.platform);
-  if (!adapter?.checkStatus) return "processing";
-
   const [account] = await db
     .select({
       accessTokenEnc: socialAccount.accessTokenEnc,
       platformAccountId: socialAccount.platformAccountId,
+      metadata: socialAccount.metadata,
     })
     .from(socialAccount)
     .where(eq(socialAccount.id, row.socialAccountId))
     .limit(1);
+
+  // Akun bridge: kredensial Repliz + replizAccountId untuk polling schedule
+  const replizAccountId = account?.metadata?.replizAccountId as string | undefined;
+  if (replizAccountId) {
+    const status = await pollReplizSchedule(postId, row.handle, replizAccountId);
+    return status;
+  }
+
+  const adapter = getAdapter(row.platform);
+  if (!adapter?.checkStatus) return "processing";
+
   const accessToken = decryptToken(account?.accessTokenEnc ?? null);
   if (!accessToken) {
     await markFailed(postId, "token_missing", "Token akun tidak tersedia saat polling.");
@@ -431,6 +497,31 @@ export async function pollPost(postId: string): Promise<"published" | "failed" |
   }
   if (status.status === "failed") {
     await markFailed(postId, status.code, status.message);
+    return "failed";
+  }
+  return "processing";
+}
+
+/** Poll satu schedule Repliz (akun bridge) — return status akhir post */
+async function pollReplizSchedule(
+  postId: string,
+  scheduleId: string,
+  replizAccountId: string,
+): Promise<"published" | "failed" | "processing"> {
+  const cred = await loadBridgeCredentials();
+  if (!cred) {
+    await markFailed(postId, "bridge_not_configured", "Bridge Repliz tidak dikonfigurasi.");
+    return "failed";
+  }
+  const { replizGetSchedule } = await import("./repliz");
+  const sched = await replizGetSchedule(cred, scheduleId, replizAccountId);
+  if (!sched) return "processing";
+  if (sched.status === "success") {
+    await markPublished(postId, sched.postId ?? scheduleId, null);
+    return "published";
+  }
+  if (sched.status === "error") {
+    await markFailed(postId, "repliz_schedule_error", "Publish via bridge Repliz gagal.");
     return "failed";
   }
   return "processing";
@@ -460,20 +551,32 @@ export async function pollInFlightPosts(
 
   for (const row of inFlight) {
     try {
+      const [account] = await db
+        .select({
+          accessTokenEnc: socialAccount.accessTokenEnc,
+          platformAccountId: socialAccount.platformAccountId,
+          metadata: socialAccount.metadata,
+        })
+        .from(socialAccount)
+        .where(eq(socialAccount.id, row.socialAccountId))
+        .limit(1);
+
+      // Akun bridge: poll schedule Repliz
+      const replizAccountId = account?.metadata?.replizAccountId as string | undefined;
+      if (replizAccountId) {
+        const status = await pollReplizSchedule(row.id, row.handle!, replizAccountId);
+        if (status === "published") published++;
+        else if (status === "failed") failed++;
+        else processing++;
+        continue;
+      }
+
       const adapter = getAdapter(row.platform);
       if (!adapter?.checkStatus) {
         processing++;
         continue;
       }
       // Ambil token akun
-      const [account] = await db
-        .select({
-          accessTokenEnc: socialAccount.accessTokenEnc,
-          platformAccountId: socialAccount.platformAccountId,
-        })
-        .from(socialAccount)
-        .where(eq(socialAccount.id, row.socialAccountId))
-        .limit(1);
       const accessToken = decryptToken(account?.accessTokenEnc ?? null);
       if (!accessToken) {
         await markFailed(row.id, "token_missing", "Token akun tidak tersedia saat polling.");
