@@ -158,6 +158,7 @@ accountsRoute.post("/pending/:id/select", async (c) => {
     if (
       row.platform !== "instagram" &&
       row.platform !== "facebook" &&
+      row.platform !== "youtube" &&
       row.platform !== "linkedin"
     ) {
       return c.json({ message: "Platform tidak mendukung pemilihan multi-akun" }, 400);
@@ -180,19 +181,29 @@ accountsRoute.post("/pending/:id/select", async (c) => {
       );
     }
 
-    // Flow bridge Repliz: page token di pending adalah token user-level Repliz.
-    // Connect Page terpilih ke workspace Repliz → simpan replizAccountId di metadata.
-    if (row.platform === "facebook" && row.pagesData.includes("replizBridge")) {
-      const { getReplizCredentials } = await import("../lib/bridge");
+    // Flow bridge Repliz: entity token di pending adalah token dari get-page/channel/org.
+    // Connect entity terpilih ke workspace Repliz → simpan replizAccountId di metadata.
+    if (
+      row.pagesData.includes("replizBridge") &&
+      (row.platform === "facebook" || row.platform === "youtube" || row.platform === "linkedin")
+    ) {
+      const { getReplizCredentials, toReplizPlatformKey } = await import("../lib/bridge");
       const cred = await getReplizCredentials();
       if (!cred) return c.json({ message: "Bridge Repliz tidak aktif" }, 400);
 
       const { replizConnectAccount, replizGetAccount } = await import("@sahabatkreator/publishing");
-      const pageToken = decrypt(page.pageAccessTokenEnc);
-      const accountId = await replizConnectAccount(cred, "facebook", {
-        pageId: page.pageId,
-        token: pageToken,
-      });
+      const platformKey = toReplizPlatformKey(row.platform);
+      if (!platformKey) return c.json({ message: "Platform tidak didukung bridge" }, 400);
+      const entityToken = decrypt(page.pageAccessTokenEnc);
+      // Body connect berbeda per platform (docs.repliz.com):
+      // facebook {pageId, token} / youtube {channelId, token} / linkedin {organizationId, token}
+      const connectInput =
+        row.platform === "facebook"
+          ? { pageId: page.pageId, token: entityToken }
+          : row.platform === "youtube"
+            ? { channelId: page.pageId, token: entityToken }
+            : { organizationId: page.pageId, token: entityToken };
+      const accountId = await replizConnectAccount(cred, platformKey, connectInput);
       const info = await replizGetAccount(cred, accountId);
 
       const [existingRepliz] = await db
@@ -200,7 +211,7 @@ accountsRoute.post("/pending/:id/select", async (c) => {
         .from(socialAccount)
         .where(
           and(
-            eq(socialAccount.platform, "facebook"),
+            eq(socialAccount.platform, row.platform),
             eq(socialAccount.platformAccountId, info.generatedId),
           ),
         )
@@ -222,7 +233,7 @@ accountsRoute.post("/pending/:id/select", async (c) => {
         metadata: {
           replizAccountId: accountId,
           replizGeneratedId: info.generatedId,
-          pageId: page.pageId,
+          entityId: page.pageId, // pageId FB / channelId YT / organizationId LinkedIn
         },
         lastSyncedAt: new Date(),
       };
@@ -232,7 +243,7 @@ accountsRoute.post("/pending/:id/select", async (c) => {
         await db.insert(socialAccount).values({
           id: generateId("socacc"),
           organizationId: ctx.organization.id,
-          platform: "facebook",
+          platform: row.platform,
           platformAccountId: info.generatedId,
           ...values,
         });
@@ -245,7 +256,7 @@ accountsRoute.post("/pending/:id/select", async (c) => {
         action: existingRepliz ? "account.reconnected" : "account.connected",
         targetType: "social_account",
         targetId: existingRepliz?.id ?? info.generatedId,
-        metadata: { platform: "facebook", username: info.username, via: "repliz" },
+        metadata: { platform: row.platform, username: info.username, via: "repliz" },
       });
       return c.json({ ok: true, username: info.username ?? info.name });
     }

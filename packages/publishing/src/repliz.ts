@@ -194,14 +194,54 @@ export async function replizGetFacebookPages(
   return data?.docs ?? [];
 }
 
+/** Channel YouTube hasil get-channel (berisi channel token) */
+export type ReplizChannel = ReplizPage; // bentuk sama: id, name, username, picture, token
+
+/** Ambil daftar channel YouTube milik user (dengan channel token masing-masing) */
+export async function replizGetYouTubeChannels(
+  cred: ReplizCredentials,
+  token: string,
+): Promise<ReplizChannel[]> {
+  const data = await replizRequest<{ docs: ReplizChannel[] }>(cred, "/public/account/youtube/channel", {
+    query: { token },
+  });
+  return data?.docs ?? [];
+}
+
+/** Organization LinkedIn hasil get-organization (berisi org token) */
+export type ReplizOrganization = ReplizPage; // bentuk sama: id (urn:li:organization:*), name, username, picture, token
+
+/** Ambil daftar LinkedIn organization yang di-admin user (dengan org token) */
+export async function replizGetLinkedInOrganizations(
+  cred: ReplizCredentials,
+  token: string,
+): Promise<ReplizOrganization[]> {
+  const data = await replizRequest<{ docs: ReplizOrganization[] }>(
+    cred,
+    "/public/account/linkedin/organization",
+    { query: { token } },
+  );
+  return data?.docs ?? [];
+}
+
 /**
  * Hubungkan akun ke workspace Repliz → accountId.
- * `pageId` dipakai Facebook (dan platform berbasis entitas serupa).
+ * Flow per platform (docs.repliz.com):
+ * - instagram / threads / tiktok: { code } — tanpa exchange
+ * - facebook:    { pageId, token }
+ * - youtube:     { channelId, token }
+ * - linkedin:    { organizationId, token }
  */
+export type ReplizConnectInput =
+  | { code: string }
+  | { pageId: string; token: string }
+  | { channelId: string; token: string }
+  | { organizationId: string; token: string };
+
 export async function replizConnectAccount(
   cred: ReplizCredentials,
   platformKey: ReplizPlatformKey,
-  input: { pageId?: string; token: string },
+  input: ReplizConnectInput,
 ): Promise<string> {
   const type = REPLIZ_PLATFORMS[platformKey];
   const data = await replizRequest<{ accountId: string }>(cred, `/public/account/${type}/connect`, {
@@ -216,13 +256,14 @@ export async function replizConnectAccount(
 
 /**
  * Reconnect akun yang token-nya expired (POST /connect/{accountId}).
- * Catatan: pageId HARUS sama dengan connect awal (error 400 "incorrect generatedId").
+ * Catatan: entity id (pageId/channelId/organizationId) HARUS sama dengan connect awal
+ * (error 400 "incorrect generatedId"); instagram/threads/tiktok kirim ulang { code }.
  */
 export async function replizReconnectAccount(
   cred: ReplizCredentials,
   platformKey: ReplizPlatformKey,
   accountId: string,
-  input: { pageId?: string; token: string },
+  input: ReplizConnectInput,
 ): Promise<void> {
   const type = REPLIZ_PLATFORMS[platformKey];
   await replizEmpty(cred, `/public/account/${type}/connect/${accountId}`, {

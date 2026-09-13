@@ -91,6 +91,8 @@ export {
   replizExchangeCode,
   replizGetAccount,
   replizGetFacebookPages,
+  replizGetLinkedInOrganizations,
+  replizGetYouTubeChannels,
   replizGetSchedule,
   replizListAccounts,
   replizRemoveAccount,

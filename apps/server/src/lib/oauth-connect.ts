@@ -105,7 +105,7 @@ export function buildPendingLinkedIn(params: {
 export async function upsertSocialAccount(params: {
   organizationId: string;
   userId: string;
-  platform: "instagram" | "facebook" | "linkedin";
+  platform: "instagram" | "facebook" | "youtube" | "linkedin";
   page: PendingPageData;
   /** User access token fallback (dipakai facebook bila page token tak ada) */
   userAccessToken: string;
