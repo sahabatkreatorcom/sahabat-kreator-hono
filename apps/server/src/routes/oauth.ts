@@ -170,7 +170,7 @@ oauthRoute.get("/:platform/start", async (c) => {
 oauthRoute.get("/:platform/callback", async (c) => {
   const platform = c.req.param("platform") as OAuthPlatform;
   const failRedirect = (msg: string) =>
-    c.redirect(`${env.WEB_URL}/dashboard/accounts?connect_error=${encodeURIComponent(msg)}`);
+    c.redirect(`${env.WEB_URL}/accounts?connect_error=${encodeURIComponent(msg)}`);
 
   try {
     if (!isOAuthPlatformSupported(platform)) {
@@ -219,7 +219,7 @@ oauthRoute.get("/:platform/callback", async (c) => {
         expiresAt: pending.expiresAt,
       });
       return c.redirect(
-        `${env.WEB_URL}/dashboard/accounts?pending=${encodeURIComponent(pending.id)}`,
+        `${env.WEB_URL}/accounts?pending=${encodeURIComponent(pending.id)}`,
       );
     }
 
@@ -250,7 +250,7 @@ oauthRoute.get("/:platform/callback", async (c) => {
         expiresAt: pending.expiresAt,
       });
       return c.redirect(
-        `${env.WEB_URL}/dashboard/accounts?pending=${encodeURIComponent(pending.id)}`,
+        `${env.WEB_URL}/accounts?pending=${encodeURIComponent(pending.id)}`,
       );
     }
 
@@ -331,7 +331,7 @@ oauthRoute.get("/:platform/callback", async (c) => {
       });
     }
 
-    return c.redirect(`${env.WEB_URL}/dashboard/accounts?connect_success=${platform}`);
+    return c.redirect(`${env.WEB_URL}/accounts?connect_success=${platform}`);
   } catch (error) {
     console.error(`[oauth] callback ${platform} gagal:`, error);
     const msg = error instanceof Error ? error.message : "Gagal menghubungkan akun";
@@ -349,7 +349,7 @@ oauthRoute.get("/:platform/callback", async (c) => {
 oauthRoute.get("/:platform/repliz-callback/:state", async (c) => {
   const platform = c.req.param("platform") as OAuthPlatform;
   const failRedirect = (msg: string) =>
-    c.redirect(`${env.WEB_URL}/dashboard/accounts?connect_error=${encodeURIComponent(msg)}`);
+    c.redirect(`${env.WEB_URL}/accounts?connect_error=${encodeURIComponent(msg)}`);
 
   try {
     if (!isOAuthPlatformSupported(platform)) {
@@ -407,7 +407,7 @@ oauthRoute.get("/:platform/repliz-callback/:state", async (c) => {
         expiresAt: new Date(Date.now() + 10 * 60 * 1000),
       });
       return c.redirect(
-        `${env.WEB_URL}/dashboard/accounts?pending=${encodeURIComponent(pendingId)}`,
+        `${env.WEB_URL}/accounts?pending=${encodeURIComponent(pendingId)}`,
       );
     }
 
@@ -483,7 +483,7 @@ oauthRoute.get("/:platform/repliz-callback/:state", async (c) => {
       });
     }
 
-    return c.redirect(`${env.WEB_URL}/dashboard/accounts?connect_success=${platform}`);
+    return c.redirect(`${env.WEB_URL}/accounts?connect_success=${platform}`);
   } catch (error) {
     console.error(`[oauth] repliz-callback ${platform} gagal:`, error);
     const msg = error instanceof Error ? error.message : "Gagal menghubungkan akun via Repliz";
