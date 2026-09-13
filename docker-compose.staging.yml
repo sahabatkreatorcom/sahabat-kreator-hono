@@ -1,8 +1,9 @@
 # ============================================================================
 # Sahabat Kreator — STAGING (app.sahabatkreator.com)
 #
-#   DB: Neon Serverless Postgres STAGING terpisah (DATABASE_URL di .env.staging
-#       — proyek Neon berbeda dari produksi). Redis tetap container.
+#   DB: Neon Serverless Postgres (DATABASE_URL di .env.staging — staging
+#       memakai Neon; PRODUKSI memakai container postgres sendiri, lihat
+#       docker-compose.prod.yml). Redis tetap container.
 #   App di 127.0.0.1:3002 (toeflynk memakai 3000; prod memakai 3001).
 #   Reverse proxy: NGINX host-level (/etc/nginx/conf.d/sahabatkreator.conf)
 #   dengan SSL Cloudflare Origin — bukan container NGINX.

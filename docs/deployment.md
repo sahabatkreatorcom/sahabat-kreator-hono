@@ -22,9 +22,11 @@ Docker Compose (per environment)
    ├── app     → Hono API + serve static web-dist (image: sahabatkreator-app)
    ├── worker  → BullMQ publisher (image sama, command berbeda)
    ├── migrate → drizzle-kit push + seed (jalan sekali per deploy)
-   └── redis   → antrean BullMQ (internal, tanpa port host)
+   ├── redis   → antrean BullMQ (internal, tanpa port host)
+   └── postgres (PROD SAJA) → PostgreSQL 17, data di volume postgres_data
 
-Database: Neon Serverless Postgres (TIDAK di container — via DATABASE_URL)
+Database: PRODUKSI = PostgreSQL 17 container (self-hosted di server)
+          STAGING  = Neon Serverless Postgres (via DATABASE_URL)
 Storage : Cloudflare R2
 Email   : Resend
 Billing : Sumopod Pay
@@ -33,7 +35,7 @@ Billing : Sumopod Pay
 **Poin penting:**
 - Satu image Docker (`sahabatkreator-app`) untuk app / worker / migrate — hanya berbeda command di compose.
 - Port 3000 dipakai aplikasi lain di server (toeflynk) — **jangan diganggu**.
-- Redis tanpa password karena hanya di jaringan internal Docker (tanpa port mapping ke host).
+- Redis & Postgres tanpa port host karena hanya di jaringan internal Docker.
 - NGINX berjalan di host (bukan container) karena server menampung beberapa aplikasi.
 
 ---
@@ -48,7 +50,7 @@ Billing : Sumopod Pay
 ### Layanan eksternal (siapkan kredensialnya dulu)
 | Layanan | Kegunaan | Yang dibutuhkan |
 |---|---|---|
-| **Neon** | Database Postgres | Connection string 2 proyek: produksi & staging (WAJIB terpisah) |
+| **Neon** | Database Postgres **staging** | Connection string proyek Neon STAGING |
 | **Cloudflare** | DNS + proxy + SSL | Akses ke domain `sahabatkreator.com`, buat **Origin Certificate** (`origin.crt` + `origin.key`) |
 | **Cloudflare R2** | Storage media | Account ID, Access Key, Secret, Bucket, Public URL |
 | **Resend** | Email transaksional | API Key + domain terverifikasi |
@@ -86,13 +88,14 @@ Generate nilai yang wajib acak:
 openssl rand -base64 32   # BETTER_AUTH_SECRET
 openssl rand -base64 32   # CRON_SECRET
 openssl rand -base64 32   # ENCRYPTION_KEY
+openssl rand -base64 24   # POSTGRES_PASSWORD
 ```
 
 Yang **wajib** dicek sebelum lanjut:
 
 | Variabel | Catatan |
 |---|---|
-| `DATABASE_URL` | Connection string **Neon produksi** (sudah ada `?sslmode=require`, jangan ditambah lagi) |
+| `POSTGRES_PASSWORD` | Password PostgreSQL produksi (container di server) — `DATABASE_URL` di-set otomatis oleh compose |
 | `BETTER_AUTH_SECRET` | Min 32 karakter acak |
 | `ENCRYPTION_KEY` | Base64 32-byte — dipakai enkripsi token OAuth user. **Jika berubah setelah go-live, semua koneksi platform invalid!** |
 | `SUMOPOD_API_BASE_URL` | Harus `https://api-pay.sumopod.com` (BUKAN sandbox) |
@@ -122,16 +125,20 @@ sudo nginx -t && sudo systemctl reload nginx
 ### 3.4 Build & jalankan
 
 ```bash
-docker compose -f docker-compose.prod.yml up -d --build
+docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --build
 ```
 
-Urutan otomatis: `redis` sehat → `migrate` (drizzle-kit push --force + seed idempoten) → `app` + `worker`.
+> ⚠️ `--env-file .env.prod` **wajib** — compose membaca `POSTGRES_PASSWORD` (dan `GA_MEASUREMENT_ID`) dari sana untuk interpolasi. Tanpa itu deploy gagal dengan pesan error yang jelas (guard `:?`).
+
+Urutan otomatis: `postgres` & `redis` sehat → `migrate` (drizzle-kit push --force + seed idempoten) → `app` + `worker`.
+
+`DATABASE_URL` **tidak perlu diisi** di `.env.prod` — compose otomatis mengarahkannya ke container postgres internal (`postgresql://sahabatkreator:...@postgres:5432/sahabatkreator`).
 
 ### 3.5 Verifikasi
 
 ```bash
-# Container semua jalan
-docker compose -f docker-compose.prod.yml ps
+# Container semua jalan (postgres, redis, migrate exited 0, app, worker)
+docker compose --env-file .env.prod -f docker-compose.prod.yml ps
 
 # Health endpoint
 curl -s https://sahabatkreator.com/health
@@ -187,7 +194,7 @@ git pull origin main
 docker compose -f docker-compose.staging.yml up -d --build
 
 # 2. Setelah QA lolos, naikkan ke produksi
-docker compose -f docker-compose.prod.yml up -d --build
+docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --build
 ```
 
 `docker compose up -d --build` otomatis:
@@ -198,7 +205,7 @@ docker compose -f docker-compose.prod.yml up -d --build
 ### Deploy hanya perubahan env (tanpa rebuild)
 
 ```bash
-docker compose -f docker-compose.prod.yml up -d --force-recreate
+docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --force-recreate
 ```
 
 ---
@@ -214,13 +221,24 @@ docker images
 # Rollback ke commit tertentu (paling andal)
 git log --oneline -10          # temukan commit terakhir yang sehat
 git checkout <commit-sehat>
-docker compose -f docker-compose.prod.yml up -d --build
+docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --build
 ```
 
-> ⚠️ **Catatan skema DB:** deploy memakai `drizzle-kit push --force` (sinkronisasi skema langsung). Push yang menghapus/mengubah kolom **bersifat destruktif dan tidak otomatis ter-rollback**. Untuk perubahan skema besar, backup dulu:
-> ```bash
-> # Backup Neon via CLI (atau export dari dashboard Neon — fitur Time Travel/branching)
-> ```
+> ⚠️ **Catatan skema DB:** deploy memakai `drizzle-kit push --force` (sinkronisasi skema langsung). Push yang menghapus/mengubah kolom **bersifat destruktif dan tidak otomatis ter-rollback**. Untuk perubahan skema besar, backup dulu (lihat § 7).
+
+### Backup database produksi (PostgreSQL container)
+
+Data produksi ada di volume `postgres_data` — **tidak ada backup otomatis dari provider** (beda dengan Neon). Jadwalkan backup rutin:
+
+```bash
+# Backup harian (cron) — dump ke file host
+docker exec sahabatkreator-postgres pg_dump -U sahabatkreator sahabatkreator \
+  | gzip > /root/backups/sahabatkreator-$(date +%F).sql.gz
+
+# Restore
+gunzip -c /root/backups/sahabatkreator-2026-09-13.sql.gz \
+  | docker exec -i sahabatkreator-postgres psql -U sahabatkreator -d sahabatkreator
+```
 
 ---
 
@@ -231,6 +249,7 @@ docker compose -f docker-compose.prod.yml up -d --build
 ```bash
 docker logs sahabatkreator-app -f --tail 100      # API
 docker logs sahabatkreator-worker -f --tail 100   # publisher worker
+docker logs sahabatkreator-postgres --tail 50     # database
 docker logs sahabatkreator-redis --tail 50        # antrean
 sudo tail -f /var/log/nginx/access.log            # trafik (NGINX host)
 ```
@@ -246,7 +265,7 @@ df -h                        # disk (watch: growth volume redis_data)
 ### Restart service
 
 ```bash
-docker compose -f docker-compose.prod.yml restart app worker
+docker compose --env-file .env.prod -f docker-compose.prod.yml restart app worker
 ```
 
 ### Endpoint khusus (butuh CRON_SECRET)
@@ -259,8 +278,9 @@ Beberapa endpoint internal (cron/fallback) memakai header `Authorization: Bearer
 
 | Gejala | Penyebab umum | Solusi |
 |---|---|---|
-| 502 Bad Gateway | Container app belum sehat / mati | `docker compose -f docker-compose.prod.yml ps`, cek log app, tunggu start_period 20s |
-| Container migrate Exit 1 | `DATABASE_URL` salah / Neon unreachable | Cek `.env.prod`, `docker logs <container-migrate>` |
+| 502 Bad Gateway | Container app belum sehat / mati | `docker compose --env-file .env.prod -f docker-compose.prod.yml ps`, cek log app, tunggu start_period 20s |
+| Container migrate Exit 1 | `POSTGRES_PASSWORD` kosong / container postgres belum sehat | Cek `.env.prod` + `--env-file`, `docker logs <container-migrate>` |
+| App connect DB gagal | `DATABASE_URL` tertimpa nilai salah di `.env.prod` | Hapus `DATABASE_URL` dari `.env.prod` — compose yang mengaturnya |
 | SSL error dari Cloudflare | Origin cert salah / kadaluarsa | Pastikan `origin.crt`/`origin.key` valid di `/etc/nginx/ssl/`, mode SSL **Full (Strict)** |
 | Email verifikasi tidak terkirim | `RESEND_API_KEY` kosong / domain belum diverifikasi | Dashboard Resend → Domain |
 | Upload media gagal | R2 kredensial/bucket salah | Cek `R2_*`, test dari Admin Panel |
@@ -276,8 +296,9 @@ Beberapa endpoint internal (cron/fallback) memakai header `Authorization: Bearer
 
 - [ ] DNS Cloudflare aktif (apex, www, app) + proxy on + Full (Strict)
 - [ ] `origin.crt` / `origin.key` terpasang di `/etc/nginx/ssl/`
-- [ ] `.env.prod` lengkap: DATABASE, BETTER_AUTH_SECRET, ENCRYPTION_KEY, CRON_SECRET, Resend, R2, Sumopod **produksi**
-- [ ] `docker compose -f docker-compose.prod.yml ps` semua healthy
+- [ ] `.env.prod` lengkap: POSTGRES_PASSWORD, BETTER_AUTH_SECRET, ENCRYPTION_KEY, CRON_SECRET, Resend, R2, Sumopod **produksi**
+- [ ] `docker compose --env-file .env.prod -f docker-compose.prod.yml ps` semua healthy
+- [ ] Backup DB berjalan (pg_dump harian via cron — data ada di volume `postgres_data`, tidak ada backup provider)
 - [ ] `/health` balas OK
 - [ ] Register + login + verifikasi email berfungsi
 - [ ] `robots.txt` indexable, `sitemap.xml` accessible
