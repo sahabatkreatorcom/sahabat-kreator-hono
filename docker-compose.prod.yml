@@ -1,0 +1,128 @@
+# ============================================================================
+# Sahabat Kreator — PRODUKSI (sahabatkreator.com)
+#
+#   DB: Neon Serverless Postgres (DATABASE_URL di .env.prod — TANPA container
+#       Postgres, server tidak terbebani). Redis tetap container untuk BullMQ.
+#   App di 127.0.0.1:3001 (toeflynk memakai 3000; staging memakai 3002).
+#   Reverse proxy: NGINX host-level (/etc/nginx/conf.d/sahabatkreator.conf)
+#   dengan SSL Cloudflare Origin — bukan container NGINX.
+#
+# Project name eksplisit — WAJIB berbeda dengan staging agar container
+# kedua environment tidak saling menimpa saat `up -d`.
+#
+# Pertama kali:
+#   cp .env.prod.example .env.prod   # lalu isi nilainya
+#   docker compose -f docker-compose.prod.yml up -d --build
+#
+# Urutan service: redis sehat → migrate (db:push + seed, jalan sekali)
+#   → app & worker.
+# ============================================================================
+
+name: sahabatkreator
+
+x-app-build: &app-build
+  context: .
+  dockerfile: Dockerfile
+  args:
+    SERVER_URL: https://sahabatkreator.com
+    SITE_URL: https://sahabatkreator.com
+    # "true" HANYA produksi → build web indexable (robots + sitemap + meta index)
+    INDEXABLE: "true"
+    # GA4 Measurement ID produksi — tracking hanya di domain produksi.
+    GA_MEASUREMENT_ID: ${GA_MEASUREMENT_ID}
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: sahabatkreator-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    # Tanpa password & tanpa mapping port host — hanya jaringan internal.
+
+  migrate:
+    build: *app-build
+    image: sahabatkreator-app:prod
+    restart: "no"
+    env_file: .env.prod
+    working_dir: /app
+    # Sinkronisasi skema (drizzle-kit push --force) + seed idempoten (plan,
+    # kategori blog, artikel blog yang sudah terindeks Google).
+    # DATABASE_URL (Neon) dibaca dari .env.prod.
+    command:
+      [
+        "sh",
+        "-c",
+        "cd /app/packages/db && bunx drizzle-kit push --force && bun scripts/seed.ts",
+      ]
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  app:
+    build: *app-build
+    image: sahabatkreator-app:prod
+    container_name: sahabatkreator-app
+    restart: unless-stopped
+    env_file: .env.prod
+    environment:
+      NODE_ENV: production
+      REDIS_URL: redis://redis:6379
+    # Resource limits — cegah 1 container memakan seluruh RAM host
+    # (server juga menjalankan aplikasi lain di port 3000 & staging).
+    mem_limit: 1g
+    memswap_limit: 1g
+    cpus: 1.5
+    ports:
+      - "127.0.0.1:3001:3000" # nginx host proxy ke sini (sahabatkreator.com)
+    depends_on:
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "bun",
+          "-e",
+          "await fetch('http://127.0.0.1:3000/health').then(r => { if (!r.ok) process.exit(1) }).catch(() => process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  worker:
+    build: *app-build
+    image: sahabatkreator-app:prod
+    container_name: sahabatkreator-worker
+    restart: unless-stopped
+    working_dir: /app/apps/worker
+    # Worker jalan langsung dari source (bun run TS) — tanpa step build terpisah.
+    command: ["bun", "run", "src/index.ts"]
+    env_file: .env.prod
+    environment:
+      NODE_ENV: production
+      REDIS_URL: redis://redis:6379
+    # Worker memproses video/gambar — beri ruang lebih dari app.
+    mem_limit: 1.5g
+    memswap_limit: 1.5g
+    cpus: 1.5
+    depends_on:
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      app:
+        condition: service_healthy
+
+volumes:
+  redis_data:
