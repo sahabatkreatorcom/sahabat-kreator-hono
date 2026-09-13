@@ -4,6 +4,7 @@ import {
   AlertTriangle,
   AtSign,
   Building2,
+  CalendarDays,
   Check,
   Copy,
   ExternalLink,
@@ -11,11 +12,13 @@ import {
   Link2,
   Loader2,
   Plus,
+  RefreshCw,
   User,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router";
 import { toast } from "sonner";
+import { Avatar } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -23,6 +26,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Modal } from "@/components/ui/modal";
 import { PageLoader } from "@/components/ui/spinner";
+import { meQueryOptions } from "@/layouts/require-auth";
 import { api } from "@/lib/api";
 import { formatDate } from "@/lib/format";
 import { PLATFORMS } from "@/lib/platforms";
@@ -51,6 +55,11 @@ export function AccountsPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [platformDialogOpen, setPlatformDialogOpen] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [infoAccount, setInfoAccount] = useState<Account | null>(null);
+
+  // Nama organisasi aktif (untuk label sinkronisasi)
+  const { data: me } = useQuery(meQueryOptions);
+  const orgName = me?.organization?.name;
 
   // Banner hasil OAuth callback (redirect dari server)
   // + deteksi ?pending= → buka modal picker Page Meta
@@ -189,16 +198,33 @@ export function AccountsPage() {
                     : ""
                 }`}
               >
-                {/* Top: Platform icon + name + status badge, info button */}
+                {/* Top: Avatar user (fallback icon platform) + name + status badge, info button */}
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-3">
-                    {Icon && (
-                      <div
-                        className="flex h-10 w-10 items-center justify-center rounded-full"
-                        style={{ backgroundColor: `${cfg.color}1a` }}
-                      >
-                        <Icon className="h-5 w-5" style={{ color: cfg.color }} />
-                      </div>
+                    {account.avatarUrl ? (
+                      <Avatar
+                        src={account.avatarUrl}
+                        alt={account.displayName ?? account.username}
+                        name={account.displayName ?? account.username}
+                        size="lg"
+                        className="ring-2"
+                        style={
+                          cfg
+                            ? {
+                                boxShadow: `0 0 0 2px ${cfg.color}33, 0 0 0 1px ${cfg.color}`,
+                              }
+                            : undefined
+                        }
+                      />
+                    ) : (
+                      Icon && (
+                        <div
+                          className="flex h-10 w-10 items-center justify-center rounded-full"
+                          style={{ backgroundColor: `${cfg.color}1a` }}
+                        >
+                          <Icon className="h-5 w-5" style={{ color: cfg.color }} />
+                        </div>
+                      )
                     )}
                     <div className="flex items-center gap-2">
                       <span className="font-semibold">{cfg?.label ?? account.platform}</span>
@@ -211,6 +237,7 @@ export function AccountsPage() {
                   </div>
                   <button
                     type="button"
+                    onClick={() => setInfoAccount(account)}
                     className="rounded-full p-1.5 text-[var(--text-muted)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)]"
                     title="Informasi akun"
                   >
@@ -232,7 +259,8 @@ export function AccountsPage() {
                     @{account.username}
                   </p>
                   <div className="mt-1 flex items-center gap-2 text-[var(--text-muted)] text-xs">
-                    <span>{formatDate(account.createdAt, "short")}</span>
+                    <CalendarDays className="h-3.5 w-3.5" />
+                    <span>Terhubung {formatDate(account.createdAt, "medium")}</span>
                     <button
                       type="button"
                       onClick={() => copyUsername(account.username, account.id)}
@@ -251,8 +279,11 @@ export function AccountsPage() {
                 {/* Last sync */}
                 {account.lastSyncedAt && (
                   <div className="mt-3 flex items-center gap-2 text-[var(--text-muted)] text-xs">
-                    <span className="h-1.5 w-1.5 rounded-full bg-[var(--text-muted)]" />
-                    <span>EC KI Profile Update</span>
+                    <RefreshCw className="h-3 w-3" />
+                    <span>
+                      Terakhir sinkron {formatDate(account.lastSyncedAt, "medium")}
+                      {orgName ? ` oleh ${orgName}` : ""}
+                    </span>
                   </div>
                 )}
 
@@ -487,6 +518,15 @@ export function AccountsPage() {
           </form>
         </Modal>
       )}
+      {/* Modal detail informasi akun */}
+      {infoAccount && (
+        <AccountInfoModal
+          account={infoAccount}
+          orgName={orgName}
+          onClose={() => setInfoAccount(null)}
+        />
+      )}
+
       {/* Modal picker Page Meta (hasil OAuth multi-Page) */}
       {pendingModalOpen && pendingId && (
         <PagePickerModal
@@ -503,6 +543,103 @@ export function AccountsPage() {
         />
       )}
     </div>
+  );
+}
+
+/**
+ * Modal detail informasi akun — dibuka via tombol info (i) pada kartu akun.
+ * Menampilkan identitas, status, dan waktu sinkronisasi terakhir.
+ */
+function AccountInfoModal({
+  account,
+  orgName,
+  onClose,
+}: {
+  account: Account;
+  orgName?: string;
+  onClose: () => void;
+}) {
+  const cfg = PLATFORMS[account.platform as keyof typeof PLATFORMS];
+  const Icon = cfg?.icon;
+  const needsReconnection =
+    !account.isConnected || !!account.lastError || account.needsReconnect;
+
+  const rows: Array<{ label: string; value: string }> = [
+    { label: "Platform", value: cfg?.label ?? account.platform },
+    { label: "Username", value: `@${account.username}` },
+    ...(account.displayName ? [{ label: "Nama tampilan", value: account.displayName }] : []),
+    { label: "Status", value: needsReconnection ? "Perlu dihubungkan ulang" : "Terhubung" },
+    { label: "Terhubung sejak", value: formatDate(account.createdAt, "medium") },
+    ...(account.lastSyncedAt
+      ? [
+          {
+            label: "Sinkronisasi terakhir",
+            value: `${formatDate(account.lastSyncedAt, "medium")}${orgName ? ` oleh ${orgName}` : ""}`,
+          },
+        ]
+      : []),
+    ...(account.lastError ? [{ label: "Error terakhir", value: account.lastError }] : []),
+  ];
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title="Informasi Akun"
+      description={`Detail akun ${cfg?.label ?? account.platform}`}
+    >
+      <div className="space-y-4">
+        {/* Identitas akun */}
+        <div className="flex items-center gap-3">
+          {account.avatarUrl ? (
+            <Avatar
+              src={account.avatarUrl}
+              alt={account.displayName ?? account.username}
+              name={account.displayName ?? account.username}
+              size="lg"
+            />
+          ) : (
+            Icon && (
+              <div
+                className="flex h-12 w-12 items-center justify-center rounded-full"
+                style={{ backgroundColor: `${cfg.color}1a` }}
+              >
+                <Icon className="h-6 w-6" style={{ color: cfg.color }} />
+              </div>
+            )
+          )}
+          <div className="min-w-0">
+            <p className="truncate font-semibold">{account.displayName ?? account.username}</p>
+            <p className="text-[var(--text-muted)] text-sm">@{account.username}</p>
+          </div>
+          {needsReconnection ? (
+            <Badge variant="warning" className="ml-auto">
+              Needs reconnection
+            </Badge>
+          ) : (
+            <Badge variant="success" className="ml-auto">
+              connected
+            </Badge>
+          )}
+        </div>
+
+        {/* Detail rows */}
+        <dl className="divide-y divide-[var(--border-light)]">
+          {rows.map((row) => (
+            <div key={row.label} className="flex items-start justify-between gap-4 py-2.5">
+              <dt className="text-[var(--text-secondary)] text-sm">{row.label}</dt>
+              <dd className="max-w-[60%] text-right text-sm break-words">{row.value}</dd>
+            </div>
+          ))}
+        </dl>
+
+        <div className="flex justify-end">
+          <Button variant="outline" onClick={onClose}>
+            Tutup
+          </Button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 
