@@ -131,11 +131,11 @@ oauthRoute.get("/:platform/start", async (c) => {
         expiresAt: new Date(Date.now() + 10 * 60 * 1000),
       });
       await db.delete(oauthState).where(lt(oauthState.expiresAt, new Date()));
-      // State HARUS ikut di redirect URL — Repliz me-redirect browser ke URL ini
-      // persis seperti yang diberikan (menambahkan ?code=), tidak mengembalikan
-      // state milik kita dari authorize dialog (state di dialog adalah milik Repliz).
+      // State HARUS di path (bukan query) — validasi redirect Repliz menolak URL
+      // dengan query string, tapi menerima path tambahan. Terbukti via spike:
+      // browser tiba di /repliz-callback/{state}?code=... (path utuh + code ditambahkan).
       const serverUrl = env.SERVER_URL || "http://localhost:3000";
-      const redirect = `${serverUrl}/api/oauth/${platform}/repliz-callback?state=${encodeURIComponent(state)}`;
+      const redirect = `${serverUrl}/api/oauth/${platform}/repliz-callback/${state}`;
       const authorizeUrl = await replizAuthorizeUrl(cred, platformKey, redirect);
       return c.json({ authorizeUrl });
     }
@@ -340,12 +340,13 @@ oauthRoute.get("/:platform/callback", async (c) => {
 });
 
 /**
- * GET /oauth/:platform/repliz-callback — callback dari halaman Repliz setelah user approve
- * OAuth di platform (via app milik Repliz). Terbukti via spike: browser diarahkan ke
- * URL redirect kita dengan ?code=<repliz exchange code> (query param, bukan fragment).
+ * GET /oauth/:platform/repliz-callback/:state — callback dari halaman Repliz setelah
+ * user approve OAuth di platform (via app milik Repliz). Terbukti via spike: browser
+ * tiba di path redirect utuh dengan ?code=<repliz exchange code> ditambahkan Repliz
+ * (state kita di path karena validasi redirect Repliz menolak query string).
  * Flow: exchange code → token Repliz → (FB: get-page → picker) → connect → accountId.
  */
-oauthRoute.get("/:platform/repliz-callback", async (c) => {
+oauthRoute.get("/:platform/repliz-callback/:state", async (c) => {
   const platform = c.req.param("platform") as OAuthPlatform;
   const failRedirect = (msg: string) =>
     c.redirect(`${env.WEB_URL}/dashboard/accounts?connect_error=${encodeURIComponent(msg)}`);
@@ -356,7 +357,7 @@ oauthRoute.get("/:platform/repliz-callback", async (c) => {
     }
 
     const code = c.req.query("code");
-    const state = c.req.query("state");
+    const state = c.req.param("state");
     const errorParam = c.req.query("error_description") ?? c.req.query("error");
     if (errorParam) return failRedirect(errorParam);
     if (!code || !state) return failRedirect("Kode otorisasi tidak lengkap");
