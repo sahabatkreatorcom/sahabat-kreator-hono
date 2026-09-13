@@ -249,8 +249,10 @@ if (WEB_DIST_DIR) {
         ) {
           return path;
         }
-        // Untuk path non-file (tidak ada extension) → fallback ke index.html SPA
-        const hasExt = /\.[A-Za-z0-9]{1,6}$/.test(path);
+        // Untuk path non-file (tidak ada extension) → fallback ke index.html SPA.
+        // Batas 12 karakter agar ".webmanifest" (11) ikut terdeteksi sebagai file
+        // — sebelumnya {1,6} membuat /manifest.webmanifest jatuh ke fallback SPA.
+        const hasExt = /\.[A-Za-z0-9]{1,12}$/.test(path);
         if (hasExt) return path;
         return "/index.html";
       },
