@@ -382,11 +382,18 @@ oauthRoute.get("/:platform/repliz-callback/:state", async (c) => {
     }
 
     // Pola connect berbeda per platform (docs.repliz.com):
-    // - instagram_standalone / threads / tiktok: connect({ code }) — tanpa exchange
+    // - instagram / instagram_standalone / threads / tiktok: connect({ code }) — tanpa
+    //   exchange (API Instagram Repliz tidak punya endpoint exchange; FB-page-picker
+    //   IG flow native tidak ada padanannya di Repliz → dua tombol IG sama-sama direct)
     // - facebook: exchange → get-page → picker → connect({ pageId, token })
     // - youtube:  exchange → get-channel → picker → connect({ channelId, token })
     // - linkedin: exchange → get-organization → picker → connect({ organizationId, token })
-    if (platform === "instagram_standalone" || platform === "threads" || platform === "tiktok") {
+    if (
+      platform === "instagram" ||
+      platform === "instagram_standalone" ||
+      platform === "threads" ||
+      platform === "tiktok"
+    ) {
       const { replizConnectAccount, replizGetAccount } = await import("@sahabatkreator/publishing");
       const accountId = await replizConnectAccount(cred, platformKey, { code });
       const info = await replizGetAccount(cred, accountId);
