@@ -17,6 +17,14 @@ import { verifyWebhookToken } from "../lib/sumopod";
 
 export const webhookRoute = new Hono();
 
+// Bentuk luar minimal — event test dari halaman Settings Sumopod tidak
+// menjamin field data.event nyata (payment_id/order_id/dst), jadi test event
+// TIDAK boleh lewat skema ketat di bawah.
+const webhookEnvelopeSchema = z.object({
+  event_type: z.string(),
+  data: z.unknown(),
+});
+
 const webhookPayloadSchema = z.object({
   event_type: z.enum(["payment.completed", "payment.failed", "payment.expired", "payment.test"]),
   data: z.object({
@@ -62,18 +70,27 @@ webhookRoute.post("/webhooks/sumopod", async (c) => {
     return c.json({ message: "Invalid JSON" }, 400);
   }
 
-  const parsed = webhookPayloadSchema.safeParse(payload);
-  if (!parsed.success) {
+  // Validasi bentuk luar dulu — cukup event_type & data untuk log + routing.
+  const envelope = webhookEnvelopeSchema.safeParse(payload);
+  if (!envelope.success) {
     await logWebhook("unknown", payload, "invalid_payload").catch(() => {});
     return c.json({ message: "Invalid payload" }, 400);
   }
-  const event = parsed.data;
 
-  // Event test hanya untuk verifikasi konfigurasi
-  if (event.event_type === "payment.test") {
-    await logWebhook(event.event_type, payload, "verified").catch(() => {});
+  // Event test dari halaman Settings Sumopod — payload-nya bebas/beda dari
+  // event nyata. Token sudah terverifikasi → cukup balas 200.
+  if (envelope.data.event_type === "payment.test") {
+    await logWebhook(envelope.data.event_type, payload, "verified").catch(() => {});
     return c.json({ received: true });
   }
+
+  // Event nyata → validasi ketat field data sebelum diproses.
+  const parsed = webhookPayloadSchema.safeParse(payload);
+  if (!parsed.success) {
+    await logWebhook(envelope.data.event_type, payload, "invalid_payload").catch(() => {});
+    return c.json({ message: "Invalid payload" }, 400);
+  }
+  const event = parsed.data;
 
   // Idempotency: skip jika event sudah pernah diproses
   const [existing] = await db
