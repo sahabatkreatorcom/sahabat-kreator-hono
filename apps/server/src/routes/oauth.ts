@@ -131,8 +131,11 @@ oauthRoute.get("/:platform/start", async (c) => {
         expiresAt: new Date(Date.now() + 10 * 60 * 1000),
       });
       await db.delete(oauthState).where(lt(oauthState.expiresAt, new Date()));
+      // State HARUS ikut di redirect URL — Repliz me-redirect browser ke URL ini
+      // persis seperti yang diberikan (menambahkan ?code=), tidak mengembalikan
+      // state milik kita dari authorize dialog (state di dialog adalah milik Repliz).
       const serverUrl = env.SERVER_URL || "http://localhost:3000";
-      const redirect = `${serverUrl}/api/oauth/${platform}/repliz-callback`;
+      const redirect = `${serverUrl}/api/oauth/${platform}/repliz-callback?state=${encodeURIComponent(state)}`;
       const authorizeUrl = await replizAuthorizeUrl(cred, platformKey, redirect);
       return c.json({ authorizeUrl });
     }
