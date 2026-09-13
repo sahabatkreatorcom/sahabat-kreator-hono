@@ -20,8 +20,14 @@ declare let self: ServiceWorkerGlobalScope & {
 cleanupOutdatedCaches();
 precacheAndRoute(self.__WB_MANIFEST);
 
-// SPA navigation fallback — shell tetap render saat offline
-registerRoute(new NavigationRoute(createHandlerBoundToURL("index.html")));
+// SPA navigation fallback — shell tetap render saat offline.
+// ⚠️ Deny navigasi ke /api/* (mis. link verifikasi email better-auth
+// /api/auth/verify-email?token=...&callbackURL=...) — biarkan sampai ke
+// server. Tanpa ini SW mencegat link dari email → SPA render 404 page.
+const denyNavigationApi = new NavigationRoute(createHandlerBoundToURL("index.html"), {
+  denylist: [/^\/api\//],
+});
+registerRoute(denyNavigationApi);
 
 // ---------------------------------------------------------------------------
 // Web Push — tampilkan notifikasi dari payload server
