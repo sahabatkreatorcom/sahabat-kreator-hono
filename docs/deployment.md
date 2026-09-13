@@ -23,7 +23,7 @@ Docker Compose (per environment)
    ├── worker  → BullMQ publisher (image sama, command berbeda)
    ├── migrate → drizzle-kit push + seed (jalan sekali per deploy)
    ├── redis   → antrean BullMQ (internal, tanpa port host)
-   └── postgres (PROD SAJA) → PostgreSQL 17, data di volume postgres_data
+   └── postgres (PROD SAJA) → PostgreSQL 18, data di volume postgres_data
 
 Database: PRODUKSI = PostgreSQL 17 container (self-hosted di server)
           STAGING  = Neon Serverless Postgres (via DATABASE_URL)
