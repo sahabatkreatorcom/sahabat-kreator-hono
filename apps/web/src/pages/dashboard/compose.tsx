@@ -423,7 +423,14 @@ export function ComposePage() {
         <div className="space-y-6 lg:col-span-2">
           {/* Pilih akun */}
           <div className="card p-6">
-            <h2 className="mb-4 font-semibold">Pilih Akun</h2>
+            <div className="mb-4 flex items-center justify-between">
+              <h2 className="font-semibold">Pilih Akun</h2>
+              {accounts.length > 0 && (
+                <span className="text-[var(--text-muted)] text-xs">
+                  {selectedAccounts.length}/{accounts.length} dipilih
+                </span>
+              )}
+            </div>
             {accounts.length === 0 ? (
               <p className="text-[var(--text-secondary)] text-sm">
                 Belum ada akun terhubung. Hubungkan akun Anda terlebih dahulu di halaman Akun
@@ -440,15 +447,40 @@ export function ComposePage() {
                       key={account.id}
                       type="button"
                       onClick={() => toggleAccount(account.id)}
-                      className={`flex items-center gap-2 rounded-full border px-3 py-1.5 text-sm transition-colors ${
+                      className={`flex items-center gap-2 rounded-full border py-1 pr-3 pl-1 text-sm transition-colors ${
                         selected
                           ? "border-[var(--accent-gold)] bg-[var(--accent-gold-light)] font-medium"
                           : "border-[var(--border)] hover:border-[var(--accent-gold)]"
                       }`}
                     >
-                      {Icon && <Icon className="h-4 w-4" style={{ color: cfg.color }} />}@
-                      {account.username}
-                      {selected && <Check className="h-3.5 w-3.5 text-[var(--accent-gold)]" />}
+                      {account.avatarUrl ? (
+                        <img
+                          src={account.avatarUrl}
+                          alt={account.username}
+                          className="h-6 w-6 rounded-full object-cover"
+                        />
+                      ) : (
+                        Icon && (
+                          <span
+                            className="flex h-6 w-6 items-center justify-center rounded-full"
+                            style={{ backgroundColor: `${cfg.color}1a` }}
+                          >
+                            <Icon className="h-3.5 w-3.5" style={{ color: cfg.color }} />
+                          </span>
+                        )
+                      )}
+                      @{account.username}
+                      {selected ? (
+                        <Check className="h-3.5 w-3.5 text-[var(--accent-gold)]" />
+                      ) : (
+                        cfg && (
+                          <span
+                            className="h-2 w-2 rounded-full"
+                            style={{ backgroundColor: cfg.color }}
+                            title={cfg.label}
+                          />
+                        )
+                      )}
                     </button>
                   );
                 })}
@@ -616,6 +648,77 @@ export function ComposePage() {
               </div>
             )}
           </div>
+
+          {/* Pengaturan platform — dipindah ke kolom utama (bawah Media) */}
+          <PlatformSettingsPanel
+            accounts={accounts}
+            selectedAccountIds={selectedAccounts}
+            settings={platformSettings}
+            onChange={(accountId, next) =>
+              setPlatformSettings((prev) => ({ ...prev, [accountId]: next }))
+            }
+          />
+
+          {/* Publikasi — dipindah ke kolom utama (bawah Media) */}
+          <div className="card space-y-4 p-6">
+            <div className="flex items-center justify-between">
+              <h2 className="font-semibold">Publikasi</h2>
+              {/* Prediksi skor engagement — update live saat konten berubah */}
+              <PredictScoreBadge
+                content={content}
+                hashtags={hashtags}
+                platforms={selectedAccounts.map(
+                  (id) => accounts.find((a) => a.id === id)?.platform ?? "instagram",
+                )}
+                hasMedia={mediaIds.length > 0}
+                scheduledHour={
+                  scheduleMode === "schedule" && scheduledAt
+                    ? new Date(scheduledAt).getHours()
+                    : new Date().getHours()
+                }
+              />
+            </div>
+            <div className="grid grid-cols-3 gap-2">
+              {(
+                [
+                  { value: "now", label: "Sekarang", icon: Send },
+                  { value: "schedule", label: "Jadwalkan", icon: CalendarClock },
+                  { value: "draft", label: "Draft", icon: Save },
+                ] as const
+              ).map((opt) => (
+                <button
+                  key={opt.value}
+                  type="button"
+                  onClick={() => setScheduleMode(opt.value)}
+                  className={`flex flex-col items-center gap-1.5 rounded-[var(--radius-md)] border px-2 py-3 text-xs ${
+                    scheduleMode === opt.value
+                      ? "border-[var(--accent-gold)] bg-[var(--accent-gold-light)] font-medium"
+                      : "border-[var(--border)] hover:border-[var(--accent-gold)]"
+                  }`}
+                >
+                  <opt.icon className="h-4 w-4" />
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+
+            {scheduleMode === "schedule" && (
+              <div className="space-y-2">
+                <Label htmlFor="scheduledAt">Tanggal & Waktu</Label>
+                <Input
+                  id="scheduledAt"
+                  type="datetime-local"
+                  value={scheduledAt}
+                  onChange={(e) => setScheduledAt(e.target.value)}
+                  required
+                />
+                <p className="text-[var(--text-muted)] text-xs">Zona waktu: Asia/Jakarta (WIB)</p>
+              </div>
+            )}
+          </div>
+
+          {/* Panel validasi — error memblokir publish */}
+          <ValidationPanel issues={validationIssues} />
         </div>
 
         {/* Panel publish */}
@@ -663,14 +766,6 @@ export function ComposePage() {
 
           <SoundPicker selectedTrackId={soundTrack?.id ?? null} onSelect={setSoundTrack} />
           <ProductPicker selectedIds={productIds} onChange={setProductIds} />
-          <PlatformSettingsPanel
-            accounts={accounts}
-            selectedAccountIds={selectedAccounts}
-            settings={platformSettings}
-            onChange={(accountId, next) =>
-              setPlatformSettings((prev) => ({ ...prev, [accountId]: next }))
-            }
-          />
 
           {/* Live preview per platform terpilih */}
           <PlatformPreviews
@@ -681,88 +776,42 @@ export function ComposePage() {
             media={selectedMedia}
           />
 
-          <div className="card space-y-4 p-6">
-            <div className="flex items-center justify-between">
-              <h2 className="font-semibold">Publikasi</h2>
-              {/* Prediksi skor engagement — update live saat konten berubah */}
-              <PredictScoreBadge
-                content={content}
-                hashtags={hashtags}
-                platforms={selectedAccounts.map(
-                  (id) => accounts.find((a) => a.id === id)?.platform ?? "instagram",
-                )}
-                hasMedia={mediaIds.length > 0}
-                scheduledHour={
-                  scheduleMode === "schedule" && scheduledAt
-                    ? new Date(scheduledAt).getHours()
-                    : new Date().getHours()
-                }
-              />
-            </div>
-            <div className="space-y-2">
-              {(
-                [
-                  { value: "now", label: "Posting Sekarang", icon: Send },
-                  { value: "schedule", label: "Jadwalkan", icon: CalendarClock },
-                  { value: "draft", label: "Simpan Draft", icon: Save },
-                ] as const
-              ).map((opt) => (
-                <button
-                  key={opt.value}
-                  type="button"
-                  onClick={() => setScheduleMode(opt.value)}
-                  className={`flex w-full items-center gap-3 rounded-[var(--radius-md)] border px-3 py-2.5 text-sm ${
-                    scheduleMode === opt.value
-                      ? "border-[var(--accent-gold)] bg-[var(--accent-gold-light)] font-medium"
-                      : "border-[var(--border)] hover:border-[var(--accent-gold)]"
-                  }`}
-                >
-                  <opt.icon className="h-4 w-4" />
-                  {opt.label}
-                </button>
-              ))}
-            </div>
-
-            {scheduleMode === "schedule" && (
-              <div className="space-y-2">
-                <Label htmlFor="scheduledAt">Tanggal & Waktu</Label>
-                <Input
-                  id="scheduledAt"
-                  type="datetime-local"
-                  value={scheduledAt}
-                  onChange={(e) => setScheduledAt(e.target.value)}
-                  required
-                />
-                <p className="text-[var(--text-muted)] text-xs">Zona waktu: Asia/Jakarta (WIB)</p>
-              </div>
+          <div className="card space-y-3 p-4 lg:sticky lg:bottom-4">
+            {/* Ringkasan target publish */}
+            {selectedAccounts.length > 0 && (
+              <p className="text-[var(--text-muted)] text-xs">
+                Akan dipublikasikan ke{" "}
+                <span className="font-medium text-[var(--text-secondary)]">
+                  {selectedAccounts.length} akun
+                </span>
+                {mediaIds.length > 0 && ` · ${mediaIds.length} media`}
+              </p>
             )}
+            <Button
+              type="submit"
+              className="w-full"
+              size="lg"
+              disabled={createPost.isPending || hasValidationErrors}
+              title={
+                hasValidationErrors ? "Perbaiki error validasi sebelum publish" : undefined
+              }
+            >
+              {createPost.isPending ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : scheduleMode === "now" ? (
+                <Send className="h-4 w-4" />
+              ) : scheduleMode === "schedule" ? (
+                <CalendarClock className="h-4 w-4" />
+              ) : (
+                <Save className="h-4 w-4" />
+              )}
+              {scheduleMode === "now"
+                ? "Posting Sekarang"
+                : scheduleMode === "schedule"
+                  ? "Jadwalkan"
+                  : "Simpan Draft"}
+            </Button>
           </div>
-
-          {/* Panel validasi — error memblokir publish */}
-          <ValidationPanel issues={validationIssues} />
-
-          <Button
-            type="submit"
-            className="w-full"
-            size="lg"
-            disabled={createPost.isPending || hasValidationErrors}
-            title={hasValidationErrors ? "Perbaiki error validasi sebelum publish" : undefined}
-          >
-            {createPost.isPending ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : scheduleMode === "now" ? (
-              <Send className="h-4 w-4" />
-            ) : scheduleMode === "schedule" ? (
-              <CalendarClock className="h-4 w-4" />
-            ) : (
-              <Save className="h-4 w-4" />
-            )}
-            {scheduleMode === "now"
-              ? "Posting Sekarang"
-              : scheduleMode === "schedule"
-                ? "Jadwalkan"
-                : "Simpan Draft"}
-          </Button>
         </div>
       </form>
 
