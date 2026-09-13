@@ -311,6 +311,25 @@ accountsRoute.delete("/:id", async (c) => {
       .limit(1);
     if (!row) return c.json({ message: "Akun tidak ditemukan" }, 404);
 
+    // Akun via bridge Repliz: hapus juga di workspace Repliz supaya slot limit
+    // (200 akun Gold) tidak terbuang dan token user benar-benar dicabut.
+    if (row.metadata?.replizAccountId) {
+      const { getReplizCredentials } = await import("../lib/bridge");
+      const cred = await getReplizCredentials();
+      if (cred) {
+        try {
+          const { replizRemoveAccount } = await import("@sahabatkreator/publishing");
+          await replizRemoveAccount(cred, String(row.metadata.replizAccountId));
+        } catch (err) {
+          // Jangan gagalkan disconnect lokal — log & lanjut (admin bisa bersihkan manual di Repliz)
+          console.error(
+            `[accounts] Gagal hapus akun Repliz ${String(row.metadata.replizAccountId)}:`,
+            err instanceof Error ? err.message : err,
+          );
+        }
+      }
+    }
+
     await db.delete(socialAccount).where(eq(socialAccount.id, row.id));
 
     // Catat aktivitas org: akun diputus/disconnect
