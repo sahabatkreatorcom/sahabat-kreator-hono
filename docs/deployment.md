@@ -24,8 +24,9 @@ Docker Compose (per environment)
    ├── migrate → drizzle-kit push + seed (jalan sekali per deploy)
    ├── redis   → antrean BullMQ (internal, tanpa port host)
    └── postgres (PROD SAJA) → PostgreSQL 18, data di volume postgres_data
+       (mount /var/lib/postgresql — PG18 mengubah PGDATA ke subpath per versi)
 
-Database: PRODUKSI = PostgreSQL 17 container (self-hosted di server)
+Database: PRODUKSI = PostgreSQL 18 container (self-hosted di server)
           STAGING  = Neon Serverless Postgres (via DATABASE_URL)
 Storage : Cloudflare R2
 Email   : Resend
