@@ -121,10 +121,12 @@ export const globalApiRateLimit = rateLimitMiddleware({
  * Preset route AI: 10 request / 60 detik per IP+user.
  * Endpoint /usage di-skip — read-only sisa kredit (murah, dipolling UI),
  * pembatasan ketat hanya untuk endpoint generatif yang memanggil LLM.
+ * /predict-score juga di-skip — murni rule-based tanpa LLM, dipanggil
+ * live saat mengetik di Compose (bukan kuota AI).
  */
 export const aiRateLimit = rateLimitMiddleware({
   windowMs: 60_000,
   max: 10,
   prefix: "ai",
-  skip: (c) => c.req.path.endsWith("/ai/usage"),
+  skip: (c) => c.req.path.endsWith("/ai/usage") || c.req.path.endsWith("/ai/predict-score"),
 });

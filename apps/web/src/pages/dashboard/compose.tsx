@@ -138,6 +138,8 @@ export function ComposePage() {
   const [platformSettings, setPlatformSettings] = useState<Record<string, SettingsState>>({});
   const [scheduleMode, setScheduleMode] = useState<"now" | "schedule" | "draft">("schedule");
   const [scheduledAt, setScheduledAt] = useState(() => defaultScheduledAt());
+  // Tab aktif di kartu Konten: caption utama vs variasi per platform
+  const [contentTab, setContentTab] = useState<"base" | "variations">("base");
 
   const { data: meData } = useQuery(meQueryOptions);
   const { data: accountsData } = useQuery({
@@ -453,34 +455,36 @@ export function ComposePage() {
                           : "border-[var(--border)] hover:border-[var(--accent-gold)]"
                       }`}
                     >
-                      {account.avatarUrl ? (
-                        <img
-                          src={account.avatarUrl}
-                          alt={account.username}
-                          className="h-6 w-6 rounded-full object-cover"
-                        />
-                      ) : (
-                        Icon && (
+                      {/* Avatar user + badge icon platform kecil di pojok */}
+                      <span className="relative">
+                        {account.avatarUrl ? (
+                          <img
+                            src={account.avatarUrl}
+                            alt={account.username}
+                            className="h-6 w-6 rounded-full object-cover"
+                          />
+                        ) : (
+                          Icon && (
+                            <span
+                              className="flex h-6 w-6 items-center justify-center rounded-full"
+                              style={{ backgroundColor: `${cfg.color}1a` }}
+                            >
+                              <Icon className="h-3.5 w-3.5" style={{ color: cfg.color }} />
+                            </span>
+                          )
+                        )}
+                        {account.avatarUrl && Icon && (
                           <span
-                            className="flex h-6 w-6 items-center justify-center rounded-full"
-                            style={{ backgroundColor: `${cfg.color}1a` }}
-                          >
-                            <Icon className="h-3.5 w-3.5" style={{ color: cfg.color }} />
-                          </span>
-                        )
-                      )}
-                      @{account.username}
-                      {selected ? (
-                        <Check className="h-3.5 w-3.5 text-[var(--accent-gold)]" />
-                      ) : (
-                        cfg && (
-                          <span
-                            className="h-2 w-2 rounded-full"
+                            className="absolute -right-0.5 -bottom-0.5 flex h-3.5 w-3.5 items-center justify-center rounded-full border border-[var(--bg-primary)]"
                             style={{ backgroundColor: cfg.color }}
                             title={cfg.label}
-                          />
-                        )
-                      )}
+                          >
+                            <Icon className="h-2 w-2 text-white" />
+                          </span>
+                        )}
+                      </span>
+                      @{account.username}
+                      {selected && <Check className="h-3.5 w-3.5 text-[var(--accent-gold)]" />}
                     </button>
                   );
                 })}
@@ -488,36 +492,84 @@ export function ComposePage() {
             )}
           </div>
 
-          {/* Konten */}
+          {/* Konten — caption utama + tab variasi per platform */}
           <div className="card p-6">
             <div className="mb-4 flex items-center justify-between">
               <h2 className="font-semibold">Konten</h2>
               <span className="text-[var(--text-muted)] text-xs">{content.length} karakter</span>
             </div>
-            <Textarea
-              placeholder="Tulis caption Anda di sini... gunakan {emoji} untuk menyemangati!"
-              rows={8}
-              value={content}
-              onChange={(e) => setContent(e.target.value)}
-            />
-            <div className="mt-2 flex flex-wrap gap-2">
-              {Object.entries(CHAR_LIMITS)
-                .filter(([platform]) =>
-                  selectedAccounts.some(
-                    (id) => accounts.find((a) => a.id === id)?.platform === platform,
-                  ),
-                )
-                .map(([platform, limit]) => (
-                  <Badge
-                    key={platform}
-                    variant={content.length > limit ? "destructive" : "secondary"}
-                    className="text-[10px]"
+
+            {/* Tab: Caption Utama | Variasi per Platform */}
+            <div className="mb-4 flex gap-1 border-[var(--border-light)] border-b">
+              {(
+                [
+                  { value: "base", label: "Caption Utama" },
+                  { value: "variations", label: "Variasi per Platform" },
+                ] as const
+              ).map((tab) => {
+                const isActive = contentTab === tab.value;
+                // Indikator dot pada tab Variasi bila ada caption custom terisi
+                const hasCustom = Object.values(variations).some((v) => v?.trim());
+                return (
+                  <button
+                    key={tab.value}
+                    type="button"
+                    onClick={() => setContentTab(tab.value)}
+                    className={`relative flex items-center gap-1.5 px-3 pb-2.5 text-sm transition-colors ${
+                      isActive
+                        ? "border-[var(--accent-gold)] border-b-2 font-medium"
+                        : "text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+                    }`}
                   >
-                    {PLATFORMS[platform as keyof typeof PLATFORMS]?.label ?? platform}:{" "}
-                    {content.length}/{limit}
-                  </Badge>
-                ))}
+                    {tab.label}
+                    {tab.value === "variations" && hasCustom && (
+                      <span className="h-1.5 w-1.5 rounded-full bg-[var(--accent-gold)]" />
+                    )}
+                  </button>
+                );
+              })}
             </div>
+
+            {contentTab === "base" ? (
+              <>
+                <Textarea
+                  placeholder="Tulis caption Anda di sini... gunakan {emoji} untuk menyemangati!"
+                  rows={8}
+                  value={content}
+                  onChange={(e) => setContent(e.target.value)}
+                />
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {Object.entries(CHAR_LIMITS)
+                    .filter(([platform]) =>
+                      selectedAccounts.some(
+                        (id) => accounts.find((a) => a.id === id)?.platform === platform,
+                      ),
+                    )
+                    .map(([platform, limit]) => (
+                      <Badge
+                        key={platform}
+                        variant={content.length > limit ? "destructive" : "secondary"}
+                        className="text-[10px]"
+                      >
+                        {PLATFORMS[platform as keyof typeof PLATFORMS]?.label ?? platform}:{" "}
+                        {content.length}/{limit}
+                      </Badge>
+                    ))}
+                </div>
+              </>
+            ) : (
+              <VariationsPanel
+                selectedAccounts={selectedAccounts}
+                accounts={accounts.map((a) => ({
+                  id: a.id,
+                  platform: a.platform,
+                  username: a.username,
+                }))}
+                variations={variations}
+                onChange={setVariations}
+                baseContent={content}
+              />
+            )}
 
             <div className="mt-4 space-y-2">
               <Label htmlFor="hashtags">Hashtag</Label>
@@ -529,19 +581,6 @@ export function ComposePage() {
               />
             </div>
           </div>
-
-          {/* Variasi caption per platform */}
-          <VariationsPanel
-            selectedAccounts={selectedAccounts}
-            accounts={accounts.map((a) => ({
-              id: a.id,
-              platform: a.platform,
-              username: a.username,
-            }))}
-            variations={variations}
-            onChange={setVariations}
-            baseContent={content}
-          />
 
           {/* Media */}
           <div className="card p-6">
@@ -777,16 +816,6 @@ export function ComposePage() {
           />
 
           <div className="card space-y-3 p-4 lg:sticky lg:bottom-4">
-            {/* Ringkasan target publish */}
-            {selectedAccounts.length > 0 && (
-              <p className="text-[var(--text-muted)] text-xs">
-                Akan dipublikasikan ke{" "}
-                <span className="font-medium text-[var(--text-secondary)]">
-                  {selectedAccounts.length} akun
-                </span>
-                {mediaIds.length > 0 && ` · ${mediaIds.length} media`}
-              </p>
-            )}
             <Button
               type="submit"
               className="w-full"

@@ -1,6 +1,7 @@
 // Badge prediksi skor engagement di Compose — rule-based via API (gratis, tanpa kredit AI)
 import { useQuery } from "@tanstack/react-query";
 import { Gauge } from "lucide-react";
+import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 
 export type ScoreFactor = {
@@ -36,18 +37,26 @@ export function PredictScoreBadge({
   /** Jam publish WIB (0-23) */
   scheduledHour: number | null;
 }) {
-  // Skor dihitung server (rule-based, gratis) — auto refetch saat input berubah
+  // Debounce input 800ms — skor tidak perlu live per ketikan, cukup setelah
+  // user berhenti mengetik (hindari spam request / rate limit 429).
+  const [debounced, setDebounced] = useState(content);
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebounced(content), 800);
+    return () => window.clearTimeout(timer);
+  }, [content]);
+
+  // Skor dihitung server (rule-based, gratis) — refetch setelah debounce
   const { data } = useQuery({
-    queryKey: ["predict-score", content, hashtags, platforms.join(","), hasMedia, scheduledHour],
+    queryKey: ["predict-score", debounced, hashtags, platforms.join(","), hasMedia, scheduledHour],
     queryFn: () =>
       api.post<PredictScore>("/ai/predict-score", {
         content: hashtags.trim()
-          ? `${content}\n\n${hashtags
+          ? `${debounced}\n\n${hashtags
               .split(/[,\s]+/)
               .map((t) => (t.startsWith("#") ? t : `#${t.replace(/^#/, "")}`))
               .filter((t) => t.length > 1)
               .join(" ")}`
-          : content,
+          : debounced,
         platforms,
         hasMedia,
         scheduledHour: scheduledHour ?? 12,
