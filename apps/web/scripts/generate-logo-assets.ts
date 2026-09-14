@@ -18,8 +18,12 @@
 //
 // Palet brand (dari index.css): navy #0C1627, biru #08A5FC,
 // oranye #FD9501, background warm #FAF8F6.
-// Grafik berwarna gelap (navy) → icon opaque memakai background terang;
-// maskable memakai navy agar menyatu di launcher Android.
+//
+// Background icon:
+//   - favicon & pwa-192/512 → TRANSPARAN (mengikuti tema browser/launcher).
+//   - apple-touch-icon → wajib opaque (iOS mengubah alpha menjadi hitam),
+//     memakai warm agar grafik navy tetap terlihat.
+//   - pwa-512-maskable → navy agar menyatu di launcher Android.
 // ============================================================
 
 import { writeFile } from "node:fs/promises";
@@ -49,6 +53,8 @@ async function main() {
       .toBuffer();
 
   // ---------- Icon persegi dari grafik ----------
+  // bg tidak diisi → kanvas transparan (favicon & PWA any-purpose).
+  // bg diisi → opaque (apple-touch-icon, maskable).
   const iconFromMark = async (
     size: number,
     opts: { bg?: string; scale?: number } = {},
@@ -57,7 +63,12 @@ async function main() {
     const pad = Math.round((size - inner) / 2);
     const mark = await markSquare(inner);
     return sharp({
-      create: { width: size, height: size, channels: 4, background: opts.bg ?? WARM },
+      create: {
+        width: size,
+        height: size,
+        channels: 4,
+        background: opts.bg ?? { r: 0, g: 0, b: 0, alpha: 0 },
+      },
     })
       .composite([{ input: mark, left: pad, top: pad }])
       .png();
@@ -76,8 +87,8 @@ async function main() {
   console.log("OK: pwa-512-maskable");
 
   // Apple touch icon: iOS menolak alpha → wajib opaque, 180x180 standar
-  await (await iconFromMark(180)).toFile(path.join(OUT, "apple-touch-icon.png"));
-  console.log("OK: apple-touch-icon");
+  await (await iconFromMark(180, { bg: WARM })).toFile(path.join(OUT, "apple-touch-icon.png"));
+  console.log("OK: apple-touch-icon (bg warm, opaque)");
 
   // ---------- favicon.ico (multi-size 16/32/48, format PNG-in-ICO) ----------
   const sizes = [16, 32, 48];
